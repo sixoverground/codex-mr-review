@@ -2,7 +2,7 @@
 
 Run the Codex CLI's review mode in GitLab CI and post findings to merge requests.
 
-**Status: scaffold.** The command line parses its arguments, and `review` exits with "not implemented". Nothing is reviewed or posted yet.
+**Status: dry run only.** `review --dry-run` runs Codex's review mode on a change and prints the findings. Nothing is posted yet: `review` without `--dry-run` exits with "not implemented".
 
 ## What it is for
 
@@ -29,7 +29,19 @@ codex-mr-review review --base <ref> [--head <ref>] [--dry-run] [--format text|js
                        [--reviewer <name>] [--clean-emoji] [--timeout <seconds>]
 ```
 
-`--dry-run` will print findings locally without posting. Install instructions and the GitLab CI template will follow once the tool does something.
+`--dry-run` prints the findings locally and posts nothing. `--base` is required. Run it from inside the repository; it reviews `--head` (default `HEAD`) against `--base` in a temporary worktree, with `AGENTS.md` taken from `--base`, and removes the worktree afterwards.
+
+- `--format text` prints each finding under its location, laid out like a cloud Codex comment, then one summary. `--format json` prints one object valid against [schema/review-output.schema.json](schema/review-output.schema.json). See [docs/output-format.md](docs/output-format.md).
+- Exit status 0 means the review completed, with or without findings. Any failure (Codex exits non-zero, times out, or returns something that does not parse, including a priority outside P0 to P3) exits 1 and prints no findings.
+- It needs the `codex` CLI on `PATH`, logged in or with `CODEX_API_KEY` or `OPENAI_API_KEY` set. It is tested with codex-cli 0.147.x and warns on any other version. What that version prints is recorded in [docs/codex-output.md](docs/codex-output.md).
+
+### Environment
+
+Codex runs with an allowlisted environment (`src/env.js`): `PATH`, `HOME`, locale and temp variables, `CODEX_HOME`, `CODEX_API_KEY`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, proxy variables and `SSL_CERT_FILE` / `SSL_CERT_DIR`. Nothing else reaches it. In particular `GITLAB_TOKEN`, `CI_JOB_TOKEN` and `CODEX_MR_REVIEW_TOKEN` never do.
+
+`CODEX_MR_REVIEW_TOKEN` is the name reserved for the GitLab token this tool will use to post. Nothing reads it yet.
+
+Install instructions and the GitLab CI template will follow once the tool posts.
 
 ## Development
 

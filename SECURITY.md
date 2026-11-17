@@ -8,10 +8,11 @@ Please report security problems privately through GitHub's private vulnerability
 
 This tool will hold a GitLab token with permission to comment on merge requests, and will run a model over code that the merge request's author controls. The rules it is built around:
 
-- **The token never reaches the model.** Codex runs as a child process with an allowlisted environment, so the GitLab token and `CI_JOB_TOKEN` are not in it.
+- **The token never reaches the model.** Codex runs as a child process with an allowlisted environment (`src/env.js`), so the GitLab token, `CI_JOB_TOKEN` and the tool's own `CODEX_MR_REVIEW_TOKEN` are not in it. A test checks the environment the child actually receives.
 - **The token is never logged or posted.** Known secret values are redacted from everything the tool writes to a merge request or to the job log.
 - **The model cannot write the review marker.** The marker is added by the tool after Codex exits successfully, using a commit sha from the CI environment. Any marker-like text in model output is removed before posting.
-- **The diff cannot rewrite its own review instructions.** `AGENTS.md` is taken from the base branch.
+- **The diff cannot rewrite its own review instructions.** The review runs in a temporary worktree of the head commit in which `AGENTS.md` and `AGENTS.override.md` are the base commit's copies, or absent when the base has none. The summary says when the head changed them.
+- **The reviewer's own Codex config is not used.** Codex runs with `--ignore-user-config`, so MCP servers and model settings from `~/.codex/config.toml` do not apply to a review.
 
 ## Known limits
 
