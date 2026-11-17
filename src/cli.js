@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 // codex-mr-review command line entry point.
 //
-// This is the scaffold: it parses arguments and validates them, and the
-// review subcommand stops with "not implemented". The runner, the GitLab
-// client and the marker arrive in later changes.
+// `review --dry-run` runs Codex's review mode and prints the findings. The
+// GitLab client and the marker arrive in later changes, so a review without
+// --dry-run stops with "not implemented".
 
 import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+
+import { runReview } from "./review.js";
+import { renderText } from "./render.js";
+import { validate } from "./schema.js";
 
 export const EXIT_OK = 0;
 export const EXIT_FAILURE = 1;
@@ -77,8 +81,9 @@ export function parseReviewArgs(args) {
   }
   const v = parsed.values;
   if (v.help) return { help: true };
-  // --base becomes mandatory when the runner lands. Until then a bare
-  // "review" reaches the not-implemented exit like any other valid call.
+  if (v.base === undefined || v.base === "") {
+    throw new UsageError("review: --base is required");
+  }
   if (!FORMATS.includes(v.format)) {
     throw new UsageError(`review: --format must be one of ${FORMATS.join(", ")}, got "${v.format}"`);
   }
@@ -91,7 +96,7 @@ export function parseReviewArgs(args) {
   }
   return {
     help: false,
-    base: v.base ?? null,
+    base: v.base,
     head: v.head ?? "HEAD",
     dryRun: v["dry-run"],
     format: v.format,
@@ -101,10 +106,20 @@ export function parseReviewArgs(args) {
   };
 }
 
+export function readOutputSchema() {
+  return JSON.parse(readFileSync(new URL("../schema/review-output.schema.json", import.meta.url), "utf8"));
+}
+
 // Runs the CLI against argv (without the node and script entries) and
-// returns an exit code. Output goes through the injected streams so tests
-// can capture it.
-export function main(argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
+// resolves with an exit code. Output goes through the injected streams so
+// tests can capture it.
+export async function main(argv, {
+  stdout = process.stdout,
+  stderr = process.stderr,
+  env = process.env,
+  cwd = process.cwd(),
+  signal,
+} = {}) {
   const [command, ...rest] = argv;
 
   if (command === undefined || command === "-h" || command === "--help" || command === "help") {
@@ -128,12 +143,43 @@ export function main(argv, { stdout = process.stdout, stderr = process.stderr } 
       stdout.write(REVIEW_HELP);
       return EXIT_OK;
     }
-    stderr.write("codex-mr-review: review is not implemented yet\n");
-    return EXIT_FAILURE;
+    if (!options.dryRun) {
+      stderr.write("codex-mr-review: posting to GitLab is not implemented yet; pass --dry-run\n");
+      return EXIT_FAILURE;
+    }
+    return runDryRun(options, { stdout, stderr, env, cwd, signal });
   }
 
   stderr.write(`codex-mr-review: unknown command "${command}"\n\n${MAIN_HELP}`);
   return EXIT_USAGE;
+}
+
+async function runDryRun(options, { stdout, stderr, env, cwd, signal }) {
+  const outcome = await runReview({
+    base: options.base,
+    head: options.head,
+    timeoutSeconds: options.timeoutSeconds,
+    cwd,
+    env,
+    signal,
+    warn: (message) => stderr.write(`codex-mr-review: warning: ${message}\n`),
+  });
+  // A failed review prints no findings: only the reason, on stderr.
+  if (!outcome.ok) {
+    stderr.write(`codex-mr-review: review failed: ${outcome.error}\n`);
+    return EXIT_FAILURE;
+  }
+  if (options.format === "json") {
+    const errors = validate(readOutputSchema(), outcome.review);
+    if (errors.length > 0) {
+      stderr.write(`codex-mr-review: review failed: output does not match its schema: ${errors.join("; ")}\n`);
+      return EXIT_FAILURE;
+    }
+    stdout.write(`${JSON.stringify(outcome.review, null, 2)}\n`);
+  } else {
+    stdout.write(renderText(outcome.review));
+  }
+  return EXIT_OK;
 }
 
 function isEntryPoint() {
@@ -146,5 +192,9 @@ function isEntryPoint() {
 }
 
 if (isEntryPoint()) {
-  process.exitCode = main(process.argv.slice(2));
+  // Ctrl-C or a CI cancel stops codex and still removes the worktree.
+  const controller = new AbortController();
+  process.once("SIGINT", () => controller.abort());
+  process.once("SIGTERM", () => controller.abort());
+  process.exitCode = await main(process.argv.slice(2), { signal: controller.signal });
 }

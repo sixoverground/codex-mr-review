@@ -1,0 +1,27 @@
+{
+  "source": "https://github.com/sixoverground/claude-phases/pull/36",
+  "author": "chatgpt-codex-connector[bot]",
+  "inline_comment": {
+    "url": "https://github.com/sixoverground/claude-phases/pull/36#discussion_r4604881062",
+    "path": "skills/phase-driver/references/watching.md",
+    "original_start_line": 84,
+    "original_line": 87,
+    "commit_id": "e47ffccf9c256e40ba83c0d2f51e9dfe865f1181",
+    "file": "inline-comment.md"
+  },
+  "review_body": {
+    "url": "https://github.com/sixoverground/claude-phases/pull/36#pullrequestreview-5945445700",
+    "commit_id": "e47ffccf9c256e40ba83c0d2f51e9dfe865f1181",
+    "file": "review-body.md"
+  },
+  "summary_comment": {
+    "url": "https://github.com/sixoverground/claude-phases/pull/36#issuecomment-6958947812",
+    "file": "summary-comment.md"
+  },
+  "fetched_with": [
+    "gh api repos/sixoverground/claude-phases/pulls/36/comments",
+    "gh api repos/sixoverground/claude-phases/pulls/36/reviews",
+    "gh api repos/sixoverground/claude-phases/issues/36/comments"
+  ],
+  "fetched_on": "2026-11-17"
+}

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sixoverground/codex-mr-review/schema/review-output.schema.json",
+  "title": "codex-mr-review review output",
+  "description": "What `codex-mr-review review --dry-run --format json` prints for a completed review. A failed review prints nothing on stdout.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "status", "base", "head", "codex_version", "agents_md_changed", "explanation", "findings"],
+  "properties": {
+    "version": { "const": 1 },
+    "status": { "const": "completed" },
+    "base": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "head": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "codex_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+" },
+    "agents_md_changed": { "type": "boolean" },
+    "explanation": { "type": "string" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "start_line", "end_line", "priority", "title", "body", "fingerprint"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "start_line": { "type": ["integer", "null"], "minimum": 1 },
+          "end_line": { "type": ["integer", "null"], "minimum": 1 },
+          "priority": { "enum": ["P0", "P1", "P2", "P3"] },
+          "title": { "type": "string", "minLength": 1 },
+          "body": { "type": "string" },
+          "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        }
+      }
+    }
+  }
+}
