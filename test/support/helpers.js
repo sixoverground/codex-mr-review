@@ -1,9 +1,9 @@
 // Shared test helpers: throwaway git repositories and a fake codex.
 
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const FIXTURES = fileURLToPath(new URL("../fixtures/", import.meta.url));
@@ -110,4 +110,43 @@ export function makeFakeCodex(scenario = {}) {
   writeFileSync(bin, `#!/bin/sh\nexec ${q(process.execPath)} ${q(FAKE)} ${q(scenarioPath)} "$@"\n`);
   chmodSync(bin, 0o755);
   return { dir, bin, record };
+}
+
+function applyFiles(dir, files) {
+  for (const [path, value] of Object.entries(files)) {
+    const full = join(dir, path);
+    rmSync(full, { recursive: true, force: true });
+    if (value === null) continue;
+    mkdirSync(dirname(full), { recursive: true });
+    if (typeof value === "string") writeFileSync(full, value);
+    else symlinkSync(value.symlink, full);
+  }
+}
+
+// A repository with a base commit on main and a head commit on feature.
+// baseFiles and headChanges map a path to its text, to { symlink: target },
+// or (in headChanges) to null to delete it.
+export function makeCustomRepo(baseFiles, headChanges) {
+  const dir = tempDir("cmr-repo-");
+  git(dir, "init", "-q", "-b", "main");
+  applyFiles(dir, baseFiles);
+  git(dir, "add", "-A");
+  git(dir, "commit", "-q", "--allow-empty", "-m", "Base");
+  const base = git(dir, "rev-parse", "HEAD");
+  git(dir, "checkout", "-q", "-b", "feature");
+  applyFiles(dir, headChanges);
+  git(dir, "add", "-A");
+  git(dir, "commit", "-q", "--allow-empty", "-m", "Head");
+  const head = git(dir, "rev-parse", "HEAD");
+  return { dir, base, head };
+}
+
+// True while a process with this pid exists.
+export function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
 }

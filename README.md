@@ -29,7 +29,7 @@ codex-mr-review review --base <ref> [--head <ref>] [--dry-run] [--format text|js
                        [--reviewer <name>] [--clean-emoji] [--timeout <seconds>]
 ```
 
-`--dry-run` prints the findings locally and posts nothing. `--base` is required. Run it from inside the repository; it reviews `--head` (default `HEAD`) against `--base` in a temporary worktree, with `AGENTS.md` taken from `--base`, and removes the worktree afterwards.
+`--dry-run` prints the findings locally and posts nothing. `--base` is required. Run it from inside the repository; it reviews `--head` (default `HEAD`) against `--base` in a temporary worktree, with every `AGENTS.md` and `AGENTS.override.md` (at any depth) taken from `--base`, and removes the worktree afterwards.
 
 - `--format text` prints each finding under its location, laid out like a cloud Codex comment, then one summary. `--format json` prints one object valid against [schema/review-output.schema.json](schema/review-output.schema.json). See [docs/output-format.md](docs/output-format.md).
 - Exit status 0 means the review completed, with or without findings. Any failure (Codex exits non-zero, times out, or returns something that does not parse, including a priority outside P0 to P3) exits 1 and prints no findings.
@@ -40,6 +40,8 @@ codex-mr-review review --base <ref> [--head <ref>] [--dry-run] [--format text|js
 Codex runs with an allowlisted environment (`src/env.js`): `PATH`, `HOME`, locale and temp variables, `CODEX_HOME`, `CODEX_API_KEY`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, proxy variables and `SSL_CERT_FILE` / `SSL_CERT_DIR`. Nothing else reaches it. In particular `GITLAB_TOKEN`, `CI_JOB_TOKEN` and `CODEX_MR_REVIEW_TOKEN` never do.
 
 `CODEX_MR_REVIEW_TOKEN` is the name reserved for the GitLab token this tool will use to post. Nothing reads it yet.
+
+The values of those three tokens and of `OPENAI_API_KEY` and `CODEX_API_KEY` are replaced with `[redacted]` in everything the tool prints. See [SECURITY.md](SECURITY.md).
 
 Install instructions and the GitLab CI template will follow once the tool posts.
 

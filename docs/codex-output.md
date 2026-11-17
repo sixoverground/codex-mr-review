@@ -13,7 +13,7 @@ codex exec --sandbox read-only --ephemeral --ignore-user-config --json \
 run with the worktree of the head commit as its working directory and an allowlisted environment (see `src/env.js`).
 
 - Exec options (`--sandbox`, `--json`, `--output-last-message`) go before the `review` subcommand. `codex exec review --help` does not list `--sandbox`, but `codex exec --help` does, and the parent's options apply to the subcommand.
-- There is no prompt argument. `codex exec review` accepts one ("Custom review instructions"), and the tool never passes it, so the review uses Codex's own review instructions plus the repository's `AGENTS.md`.
+- There is no prompt argument. `codex exec review` accepts one ("Custom review instructions"), and the tool never passes it, so the review uses Codex's own review instructions plus the repository's `AGENTS.md` files. Codex reads `AGENTS.md` and `AGENTS.override.md` from the root down to its working directory; the tool resets every one of them, at any depth, to the base commit's copy, so it does not depend on which ones Codex reads.
 - `--base` is documented as taking a branch. A full commit sha works: in the recorded run Codex diffed against `a488c33...` directly.
 - `--ignore-user-config` is passed so the reviewer's `~/.codex/config.toml` does not change the review. On the machine this was recorded on, that config selects a model a ChatGPT login cannot use, and the review failed with `model_not_found` (recorded in `test/fixtures/codex-0.147.0/failed-model-not-found.events.jsonl`). The same config also starts MCP servers. Authentication still comes from `CODEX_HOME`.
 

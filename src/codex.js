@@ -6,7 +6,9 @@
 // review layout. --output-schema is accepted in review mode but has no
 // effect, so that text is parsed here.
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+
+import { ExecError, runSync } from "./exec.js";
 
 // The Codex CLI versions this parser was checked against.
 export const TESTED_CODEX = Object.freeze({ major: 0, minor: 147, label: "0.147.x" });
@@ -41,8 +43,13 @@ export function reviewArgs({ baseSha, lastMessagePath }) {
 
 // Returns the version string, such as "0.147.0", or throws.
 export function codexVersion(bin, env) {
-  const r = spawnSync(bin, ["--version"], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000 });
-  if (r.error) throw new CodexOutputError(`could not run ${bin}: ${r.error.message}`);
+  let r;
+  try {
+    r = runSync(bin, ["--version"], { env, timeout: 30_000 });
+  } catch (err) {
+    if (err instanceof ExecError) throw new CodexOutputError(err.message);
+    throw err;
+  }
   if (r.status !== 0) throw new CodexOutputError(`${bin} --version exited with ${r.status}`);
   const m = /codex-cli (\d+)\.(\d+)\.(\d+\S*)/.exec(r.stdout);
   if (!m) throw new CodexOutputError(`could not read a version from "${r.stdout.trim()}"`);
@@ -54,16 +61,25 @@ export function isTestedVersion(version) {
   return major === TESTED_CODEX.major && minor === TESTED_CODEX.minor;
 }
 
-function killGroup(child, sig) {
+// Signals codex's whole process group. ESRCH (nothing left in the group)
+// is the normal case after the leader and its children have exited.
+function killGroup(pid, sig) {
+  if (pid === undefined) return;
   try {
-    process.kill(-child.pid, sig);
-  } catch {
-    try { child.kill(sig); } catch { /* already gone */ }
+    process.kill(-pid, sig);
+  } catch (err) {
+    if (err.code !== "ESRCH") throw err;
   }
 }
 
 // Spawns codex and resolves with what happened. Never rejects.
-export function runCodex({ bin, args, cwd, env, timeoutMs, signal }) {
+//
+// codex runs as the leader of its own process group. Whenever the leader
+// exits, on every path, the whole group gets SIGKILL before this resolves,
+// so nothing codex started can outlive the review or its worktree. On a
+// timeout or an abort the group gets SIGTERM first and SIGKILL after a
+// grace period; the leader exiting early does not cancel that.
+export function runCodex({ bin, args, cwd, env, timeoutMs, signal, graceMs = 5_000 }) {
   return new Promise((resolve) => {
     let child;
     let settled = false;
@@ -72,24 +88,28 @@ export function runCodex({ bin, args, cwd, env, timeoutMs, signal }) {
     let stdout = "";
     let stderr = "";
     let killTimer;
+    const sweep = () => {
+      try { killGroup(child?.pid, "SIGKILL"); } catch { /* EPERM: not ours to kill */ }
+    };
     const finish = (result) => {
       if (settled) return;
       settled = true;
+      sweep();
       clearTimeout(timer);
       clearTimeout(killTimer);
       signal?.removeEventListener("abort", onAbort);
       resolve({ stdout, stderr, timedOut, aborted, ...result });
     };
     const stop = () => {
-      killGroup(child, "SIGTERM");
-      killTimer = setTimeout(() => killGroup(child, "SIGKILL"), 5_000);
+      try { killGroup(child?.pid, "SIGTERM"); } catch { /* EPERM */ }
+      killTimer = setTimeout(sweep, graceMs);
     };
     const onAbort = () => { aborted = true; stop(); };
     const timer = setTimeout(() => { timedOut = true; stop(); }, timeoutMs);
 
     try {
       // detached puts codex and anything it starts in their own process
-      // group, so a timeout can stop all of them.
+      // group, so the group can be stopped as a whole.
       child = spawn(bin, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     } catch (err) {
       finish({ code: null, signal: null, spawnError: err });
@@ -100,6 +120,9 @@ export function runCodex({ bin, args, cwd, env, timeoutMs, signal }) {
     child.stdout.on("data", (d) => { stdout += d; });
     child.stderr.on("data", (d) => { stderr += d; });
     child.on("error", (err) => finish({ code: null, signal: null, spawnError: err }));
+    // A descendant can keep the pipes open after the leader exits, which
+    // would hold back "close"; killing the group on "exit" releases them.
+    child.on("exit", sweep);
     child.on("close", (code, sig) => finish({ code, signal: sig }));
     if (signal) {
       if (signal.aborted) onAbort();

@@ -1,6 +1,10 @@
 // The review runner: a temporary worktree of the head commit with the base
-// commit's AGENTS.md, one `codex exec review` in it, and the findings it
-// returned. Nothing here touches the network itself.
+// commit's guidance files (every AGENTS.md and AGENTS.override.md), one
+// `codex exec review` in it, and the findings it returned. Nothing here
+// touches the network itself.
+//
+// Messages returned from here may quote codex's output. They are redacted
+// where the CLI writes them (src/redact.js), not here.
 
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -67,7 +71,7 @@ export async function runReview({
   const lastMessagePath = join(scratch, "last-message.txt");
   try {
     addWorktree(root, worktree, headSha);
-    useBaseGuidance(root, worktree, baseSha);
+    useBaseGuidance(root, worktree, baseSha, headSha);
 
     const run = await runCodex({
       bin: codexBin,

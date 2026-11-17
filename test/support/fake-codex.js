@@ -13,9 +13,12 @@
 //   sleepMs       wait this long before printing anything
 //   stderr        text to print on stderr
 //   record        directory to write what the fake saw: env.json,
-//                 args.json, cwd.txt and agents.json
+//                 args.json, cwd.txt, agents.json and guidance.json
+//   stubbornPid   path: start a descendant that ignores SIGTERM and does
+//                 not hold the pipes, and write its pid there
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const [scenarioPath, ...args] = process.argv.slice(2);
@@ -38,6 +41,32 @@ if (scenario.record) {
     "AGENTS.md": readGuidance("AGENTS.md"),
     "AGENTS.override.md": readGuidance("AGENTS.override.md"),
   }));
+  // Every guidance file in the tree, seen without following symlinks.
+  const guidance = {};
+  const walk = (dir, rel) => {
+    for (const name of readdirSync(dir)) {
+      if (name === ".git") continue;
+      const path = join(dir, name);
+      const relPath = rel ? `${rel}/${name}` : name;
+      const st = lstatSync(path);
+      if (st.isDirectory()) walk(path, relPath);
+      else if (name === "AGENTS.md" || name === "AGENTS.override.md") {
+        guidance[relPath] = st.isSymbolicLink()
+          ? { symlink: readlinkSync(path) }
+          : { file: readFileSync(path, "utf8") };
+      }
+    }
+  };
+  walk(cwd, "");
+  writeFileSync(join(scenario.record, "guidance.json"), JSON.stringify(guidance));
+}
+
+if (scenario.stubbornPid) {
+  const script = `process.on("SIGTERM", () => {});
+require("fs").writeFileSync(${JSON.stringify(scenario.stubbornPid)}, String(process.pid));
+setInterval(() => {}, 1000);`;
+  spawn(process.execPath, ["-e", script], { stdio: "ignore" }).unref();
+  while (!existsSync(scenario.stubbornPid)) await new Promise((resolve) => setTimeout(resolve, 20));
 }
 
 await new Promise((resolve) => setTimeout(resolve, scenario.sleepMs ?? 0));

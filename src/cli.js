@@ -9,6 +9,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
+import { makeRedactor, redactingStream, secretValues } from "./redact.js";
 import { runReview } from "./review.js";
 import { renderText } from "./render.js";
 import { validate } from "./schema.js";
@@ -120,6 +121,20 @@ export async function main(argv, {
   cwd = process.cwd(),
   signal,
 } = {}) {
+  // The one redaction point: everything main writes, on either stream and
+  // in either format, goes through these two wrappers.
+  const redact = makeRedactor(secretValues(env));
+  const out = redactingStream(stdout, redact);
+  const err = redactingStream(stderr, redact);
+  try {
+    return await dispatch(argv, { stdout: out, stderr: err, env, cwd, signal });
+  } catch (error) {
+    err.write(`codex-mr-review: internal error: ${error?.stack ?? error}\n`);
+    return EXIT_FAILURE;
+  }
+}
+
+async function dispatch(argv, { stdout, stderr, env, cwd, signal }) {
   const [command, ...rest] = argv;
 
   if (command === undefined || command === "-h" || command === "--help" || command === "help") {
