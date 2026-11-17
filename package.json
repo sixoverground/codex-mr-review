@@ -1,0 +1,33 @@
+{
+  "name": "codex-mr-review",
+  "version": "0.0.0",
+  "description": "Run the Codex CLI's review mode in GitLab CI and post findings to merge requests",
+  "license": "MIT",
+  "author": "Six Overground",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sixoverground/codex-mr-review.git"
+  },
+  "type": "module",
+  "bin": {
+    "codex-mr-review": "src/cli.js"
+  },
+  "files": [
+    "src",
+    "docs",
+    "LICENSE",
+    "README.md",
+    "SECURITY.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "eslint": "10.15.0"
+  }
+}
