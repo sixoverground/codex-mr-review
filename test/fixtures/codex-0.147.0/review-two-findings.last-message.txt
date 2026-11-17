@@ -2,8 +2,8 @@ Both newly added loops use inclusive upper bounds. This makes `sumFirst` incorre
 
 Full review comments:
 
-- [P2] Stop max before the out-of-range index — /private/var/folders/f6/3_qwx2xs10x1994wbkzvbgqc0000gn/T/codex-mr-review-cW3vaP/worktree/src/stats.js:17-17
+- [P2] Stop max before the out-of-range index — /private/tmp/codex-mr-review-cW3vaP/worktree/src/stats.js:17-17
   When the array inherits a numeric property at index `values.length` (for example, `Array.prototype[2] = 100` for `[1, 2]`), the extra iteration reads that property and can return a value that is not in the array. Use `< values.length` so only actual array indices are considered.
 
-- [P1] Sum exactly the first n values — /private/var/folders/f6/3_qwx2xs10x1994wbkzvbgqc0000gn/T/codex-mr-review-cW3vaP/worktree/src/stats.js:26-26
+- [P1] Sum exactly the first n values — /private/tmp/codex-mr-review-cW3vaP/worktree/src/stats.js:26-26
   The inclusive bound adds `values[n]`, so `sumFirst([1, 2, 3], 2)` returns 6 instead of 3; when `n === values.length`, it also adds `undefined` and returns `NaN`. Iterate while `i < n` to match the documented first-`n` behavior.

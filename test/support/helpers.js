@@ -13,7 +13,7 @@ const FAKE = fileURLToPath(new URL("./fake-codex.js", import.meta.url));
 
 // The worktree path inside the recorded real run; the fake swaps it for its
 // own working directory.
-export const RECORDED_ROOT = "/private/var/folders/f6/3_qwx2xs10x1994wbkzvbgqc0000gn/T/codex-mr-review-YF5anb/worktree";
+export const RECORDED_ROOT = "/private/tmp/codex-mr-review-YF5anb/worktree";
 
 export function tempDir(prefix = "cmr-test-") {
   return mkdtempSync(join(tmpdir(), prefix));

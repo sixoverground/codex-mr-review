@@ -5,7 +5,7 @@
   "args": ["exec", "--sandbox", "read-only", "--ephemeral", "--ignore-user-config", "--json", "--output-last-message", "<scratch>/last-message.txt", "review", "--base", "a488c332d781dbd38a45676dc6c6e6aa520ccc59"],
   "exit_code": 0,
   "stderr": "",
-  "worktree": "/private/var/folders/f6/3_qwx2xs10x1994wbkzvbgqc0000gn/T/codex-mr-review-YF5anb/worktree",
+  "worktree": "/private/tmp/codex-mr-review-YF5anb/worktree",
   "events": "review-planted-bug.events.jsonl",
   "last_message": "review-planted-bug.last-message.txt"
 }

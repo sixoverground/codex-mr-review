@@ -64,7 +64,7 @@ Review comment:
 
 `test/fixtures/codex-0.147.0/`:
 
-- `review-planted-bug.events.jsonl` and `review-planted-bug.last-message.txt`: the raw stdout and last message of the real run started by `codex-mr-review review --base a488c33 --head feature --dry-run` against a throwaway repository whose feature branch adds `sumFirst()` with a `<=` loop bound. Recorded by a shim placed first on `PATH` that ran the real `codex` and kept copies. Unedited, so the command output inside it carries the local machine's paths and Xcode noise from the sandbox. `review-planted-bug.json` has the details.
+- `review-planted-bug.events.jsonl` and `review-planted-bug.last-message.txt`: the raw stdout and last message of the real run started by `codex-mr-review review --base a488c33 --head feature --dry-run` against a throwaway repository whose feature branch adds `sumFirst()` with a `<=` loop bound. Recorded by a shim placed first on `PATH` that ran the real `codex` and kept copies. Unedited except for two redactions, applied the same way across every file here: the macOS temporary directory (`/var/folders/<id>/T`) became `/tmp`, and the local account name, which appeared in an `ls -la` Codex ran, became `user`. The Xcode noise from the sandbox is left as it was. `review-planted-bug.json` has the details.
 - `review-two-findings.*`: a second real run of the same command on the same repository that reported two findings, recorded the same way. It is the source for the `Full review comments:` layout.
 - `failed-model-not-found.events.jsonl`: the raw stdout of a real run that failed (exit 1) because the user config chose an unsupported model.
 

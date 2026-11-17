@@ -105,7 +105,7 @@ test("the recorded two-finding review prints both findings in order", () => {
   const fake = makeFakeCodex({
     events: join(CODEX_FIXTURES, "review-two-findings.events.jsonl"),
     lastMessage: join(CODEX_FIXTURES, "review-two-findings.last-message.txt"),
-    recordedRoot: "/private/var/folders/f6/3_qwx2xs10x1994wbkzvbgqc0000gn/T/codex-mr-review-cW3vaP/worktree",
+    recordedRoot: "/private/tmp/codex-mr-review-cW3vaP/worktree",
   });
   const r = review(repo, fake, ["--base", repo.base, "--dry-run", "--format", "json"]);
   assert.equal(r.status, 0, r.stderr);
