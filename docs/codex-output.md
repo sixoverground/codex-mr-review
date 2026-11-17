@@ -54,17 +54,18 @@ Review comment:
 
 `<U+2014>` stands for the em dash character Codex prints between the title and the location. The recorded example is `test/fixtures/codex-0.147.0/review-planted-bug.last-message.txt`.
 
-- The header was `Review comment:` for one finding. A review with several findings has not been observed yet, and the plural header is not confirmed; the parser accepts `Review comment:`, `Review comments:` and `Full review comments:`, and a test covers several findings in that layout with synthetic text.
+- The header is `Review comment:` for one finding and `Full review comments:` for more than one (both observed). Each finding after the first is preceded by a blank line. The parser also accepts `Review comments:`, which has not been observed.
 - The priority is not a separate field: it is the `[P0]` to `[P3]` prefix of the title. A finding with no prefix, or one outside P0 to P3, fails the run.
 - The location is an absolute path inside the worktree (on macOS under `/private/var/folders/...`, the resolved form of `$TMPDIR`), then `:start-end`. A one-line finding is written `26-26`. The tool strips the worktree root and fails the run if a path points outside it.
 - A review with no findings is the explanation alone, with no header. A text that has finding-like lines (`- [P1] ...`) but no header is treated as unparseable rather than clean.
-- Both runs on the planted bug found it, once as P2 and once as P1, at `src/stats.js:26-27` and `src/stats.js:26-26`. Codex is not deterministic between runs.
+- Every run on the planted bug found it, at P2 or P1, as `src/stats.js:26-27` or `src/stats.js:26-26`. Some runs also flagged the `<=` bound in `max()` as a second finding, at P2 or P3. Codex is not deterministic between runs.
 
 ## Recorded fixtures
 
 `test/fixtures/codex-0.147.0/`:
 
 - `review-planted-bug.events.jsonl` and `review-planted-bug.last-message.txt`: the raw stdout and last message of the real run started by `codex-mr-review review --base a488c33 --head feature --dry-run` against a throwaway repository whose feature branch adds `sumFirst()` with a `<=` loop bound. Recorded by a shim placed first on `PATH` that ran the real `codex` and kept copies. Unedited, so the command output inside it carries the local machine's paths and Xcode noise from the sandbox. `review-planted-bug.json` has the details.
+- `review-two-findings.*`: a second real run of the same command on the same repository that reported two findings, recorded the same way. It is the source for the `Full review comments:` layout.
 - `failed-model-not-found.events.jsonl`: the raw stdout of a real run that failed (exit 1) because the user config chose an unsupported model.
 
 The tests replay these through `test/support/fake-codex.js`, a stand-in `codex` placed first on `PATH`, so CI needs no Codex install or login.

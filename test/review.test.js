@@ -100,6 +100,27 @@ test("--format json validates against the checked-in schema", () => {
   );
 });
 
+test("the recorded two-finding review prints both findings in order", () => {
+  const repo = makeRepo();
+  const fake = makeFakeCodex({
+    events: join(CODEX_FIXTURES, "review-two-findings.events.jsonl"),
+    lastMessage: join(CODEX_FIXTURES, "review-two-findings.last-message.txt"),
+    recordedRoot: "/private/var/folders/f6/3_qwx2xs10x1994wbkzvbgqc0000gn/T/codex-mr-review-cW3vaP/worktree",
+  });
+  const r = review(repo, fake, ["--base", repo.base, "--dry-run", "--format", "json"]);
+  assert.equal(r.status, 0, r.stderr);
+  const out = JSON.parse(r.stdout);
+  assert.deepEqual(validate(readOutputSchema(), out), []);
+  assert.deepEqual(
+    out.findings.map((f) => [f.path, f.start_line, f.end_line, f.priority, f.title]),
+    [
+      ["src/stats.js", 17, 17, "P2", "Stop max before the out-of-range index"],
+      ["src/stats.js", 26, 26, "P1", "Sum exactly the first n values"],
+    ],
+  );
+  assert.notEqual(out.findings[0].fingerprint, out.findings[1].fingerprint);
+});
+
 test("the codex child environment has no GitLab token, job token or tool token", () => {
   const repo = makeRepo();
   const fake = makeFakeCodex();
