@@ -1,6 +1,6 @@
 // Shared test helpers: throwaway git repositories and a fake codex.
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -141,8 +141,28 @@ export function makeCustomRepo(baseFiles, headChanges) {
   return { dir, base, head };
 }
 
-// True while a process with this pid exists.
-export function alive(pid) {
+// Reads `ps -o stat= -p <pid>`: an empty answer means no such process, a
+// state starting with Z means a zombie. Returns true when the process is
+// still running.
+export function runningFromPsStat(output) {
+  const stat = output.trim();
+  return stat !== "" && !stat.startsWith("Z");
+}
+
+function psStat(pid) {
+  const r = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" });
+  if (r.error) return null;
+  return r.stdout;
+}
+
+// True while the process is running. A zombie counts as gone: it has
+// exited, and in a container whose PID 1 does not reap orphans it may stay
+// a zombie forever, which kill(pid, 0) cannot tell apart from running.
+// Falls back to kill(pid, 0) only when ps cannot be run. ps is a parameter
+// so the zombie case can be tested without making a zombie.
+export function alive(pid, { ps = psStat } = {}) {
+  const output = ps(pid);
+  if (output !== null) return runningFromPsStat(output);
   try {
     process.kill(pid, 0);
     return true;

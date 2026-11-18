@@ -1,7 +1,7 @@
 // The few git operations the review runner needs, run synchronously.
 
 import {
-  lstatSync, mkdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync,
+  lstatSync, mkdirSync, realpathSync, rmSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { join, posix, sep } from "node:path";
 
@@ -85,11 +85,96 @@ export function guidanceEntries(cwd, commit) {
   return entries;
 }
 
+// Links followed before resolution gives up, as the kernel's ELOOP limit.
+const MAX_LINK_HOPS = 40;
+
+// The entry called name in the tree at <commit>:<dir>, or null. Lists the
+// directory and compares names exactly, so no path is ever parsed as a
+// pattern.
+function treeEntry(cwd, commit, dir, name) {
+  const out = git(["ls-tree", "-z", dir === "" ? commit : `${commit}:${dir}`], cwd);
+  for (const record of out.split("\0")) {
+    if (record === "") continue;
+    const tab = record.indexOf("\t");
+    if (record.slice(tab + 1) !== name) continue;
+    const [mode, type, object] = record.slice(0, tab).split(" ");
+    return { mode, type, object };
+  }
+  return null;
+}
+
+// Resolves path inside commit's tree, following symlinks (in any component,
+// and in chains) against that same tree and never against a checkout.
+// Returns { path, object, via } where path and object name the regular
+// file reached and via lists every symlink followed. Throws GitError when
+// a link leaves the repository, a component is missing, or links loop.
+export function resolveInTree(cwd, commit, path) {
+  let pending = path.split("/");
+  const resolved = [];
+  const via = [];
+  let hops = 0;
+  let entry = null;
+  while (pending.length > 0) {
+    const part = pending.shift();
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      if (resolved.length === 0) throw new GitError(`${path} resolves outside the repository in ${commit.slice(0, 12)}`);
+      resolved.pop();
+      entry = null;
+      continue;
+    }
+    entry = treeEntry(cwd, commit, resolved.join("/"), part);
+    const here = [...resolved, part].join("/");
+    if (entry === null) throw new GitError(`${path} resolves to ${here}, which does not exist in ${commit.slice(0, 12)}`);
+    if (entry.mode === SYMLINK_MODE) {
+      hops += 1;
+      if (hops > MAX_LINK_HOPS) throw new GitError(`${path} is a symlink loop in ${commit.slice(0, 12)}`);
+      via.push(here);
+      const target = git(["cat-file", "blob", entry.object], cwd);
+      if (target.startsWith("/")) throw new GitError(`${here} is a symlink to an absolute path (${target}) in ${commit.slice(0, 12)}`);
+      // A link is relative to the directory holding it, which is resolved.
+      pending = [...target.split("/"), ...pending];
+      entry = null;
+      continue;
+    }
+    resolved.push(part);
+    if (pending.some((p) => p !== "" && p !== ".") && entry.type !== "tree") {
+      throw new GitError(`${path} passes through ${here}, which is not a directory in ${commit.slice(0, 12)}`);
+    }
+  }
+  if (entry === null || entry.type !== "blob") {
+    throw new GitError(`${path} does not resolve to a file in ${commit.slice(0, 12)}`);
+  }
+  return { path: resolved.join("/"), object: entry.object, via };
+}
+
+// Every path a commit's guidance symlinks pass through or land on.
+function guidanceLinkDeps(cwd, commit, { strict }) {
+  const deps = new Set();
+  for (const [rel, entry] of guidanceEntries(cwd, commit)) {
+    if (entry.mode !== SYMLINK_MODE) continue;
+    try {
+      const r = resolveInTree(cwd, commit, rel);
+      for (const p of [...r.via, r.path]) deps.add(p);
+    } catch (err) {
+      if (strict || !(err instanceof GitError)) throw err;
+    }
+  }
+  return deps;
+}
+
 // True when the head added, edited or deleted any guidance file, at any
-// depth, since it left the base.
+// depth, since it left the base, or changed any file a base guidance
+// symlink resolves to (or any link on the way). A base guidance link that
+// does not resolve fails here, before codex starts.
 export function headChangedGuidance(cwd, base, head) {
   const from = mergeBase(cwd, base, head);
-  const paths = new Set([...guidanceEntries(cwd, from).keys(), ...guidanceEntries(cwd, head).keys()]);
+  const paths = new Set([
+    ...guidanceEntries(cwd, from).keys(),
+    ...guidanceEntries(cwd, head).keys(),
+    ...guidanceLinkDeps(cwd, base, { strict: true }),
+    ...guidanceLinkDeps(cwd, from, { strict: false }),
+  ]);
   if (paths.size === 0) return false;
   const status = gitStatus(["diff", "--quiet", from, head, "--", ...[...paths].map((p) => `:(literal)${p}`)], cwd);
   if (status === 0) return false;
@@ -163,14 +248,13 @@ export function useBaseGuidance(cwd, worktree, base, head) {
     const target = join(parent, posix.basename(rel));
     unlinkEntry(target);
     if (entry === undefined) continue;
-    const content = git(["cat-file", "blob", entry.object], cwd, { encoding: "buffer" });
-    if (entry.mode === SYMLINK_MODE) {
-      // The base is trusted: recreate its symlink as it was.
-      symlinkSync(content.toString("utf8"), target);
-    } else {
-      // "wx" fails rather than follows if anything appeared at target.
-      writeFileSync(target, content, { flag: "wx" });
-    }
+    // A guidance symlink is never recreated: in the worktree it would
+    // resolve against the head's files. It is resolved in the base tree
+    // instead, and its content written as a regular file.
+    const object = entry.mode === SYMLINK_MODE ? resolveInTree(cwd, base, rel).object : entry.object;
+    const content = git(["cat-file", "blob", object], cwd, { encoding: "buffer" });
+    // "wx" fails rather than follows if anything appeared at target.
+    writeFileSync(target, content, { flag: "wx" });
   }
 }
 
