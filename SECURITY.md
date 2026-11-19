@@ -18,6 +18,8 @@ This tool will hold a GitLab token with permission to comment on merge requests,
 - **The reviewer's own Codex config is not used.** Codex runs with `--ignore-user-config`, so MCP servers and model settings from `~/.codex/config.toml` do not apply to a review.
 
 - **The marker is the tool's, not the model's.** It is built by the tool from the CI sha (or the checkout's), only after Codex exited successfully and every finding was posted, and it goes in a top-level note. A failed run posts no marker.
+- **Everything from Codex is scrubbed at one point.** Every string in a review (path, title, body, explanation, and any field added later) is scrubbed of the marker prefix right after Codex returns, before anything is printed or posted, and printed text is scrubbed again on its way out. A finding whose path contains a newline, a control character or an angle bracket fails the run.
+- **Redirects are never followed.** A 3xx from the GitLab API fails the request with its status and the target's origin only, so the token is never resent to another host.
 - **Only the tool's own threads count for dedupe.** A finding is skipped or reopened only when its fingerprint is on a thread the token's own account started, so a fingerprint pasted by someone else cannot hide a finding. Model text cannot carry a fingerprint either: the prefix is scrubbed.
 - **Post as a dedicated identity.** Anyone who can comment can type a marker by hand, so a consumer should accept a marker only from the account the tool posts as. Use a bot user or a project access token for `CODEX_MR_REVIEW_TOKEN`, not a person's token.
 

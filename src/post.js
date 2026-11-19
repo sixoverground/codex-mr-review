@@ -36,12 +36,17 @@ export function scrubModelText(text) {
   }
 }
 
-export function scrubReview(review) {
-  return {
-    ...review,
-    explanation: scrubModelText(review.explanation),
-    findings: review.findings.map((f) => ({ ...f, title: scrubModelText(f.title), body: scrubModelText(f.body) })),
-  };
+// Scrubs every string in a review, whatever field it is in, so a field
+// added later cannot bypass it. The tool's own fields (shas, fingerprints,
+// versions) contain no prefix and pass through unchanged. The CLI calls
+// this once on each review, before anything is printed or posted.
+export function scrubReview(value) {
+  if (typeof value === "string") return scrubModelText(value);
+  if (Array.isArray(value)) return value.map(scrubReview);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrubReview(v)]));
+  }
+  return value;
 }
 
 function fingerprintComment(fp) {
@@ -124,7 +129,8 @@ export function indexThreads(discussions, selfId) {
 export async function postReview(client, review, {
   sha, reviewer, cleanEmoji = false, selfId, diffRefs, position, log = () => {},
 }) {
-  const clean = scrubReview(review);
+  // review has already been through scrubReview (see the CLI).
+  const clean = review;
   const threads = indexThreads(await client.listDiscussions(), selfId);
   const seen = new Set();
   const result = { inline: 0, general: 0, notReposted: 0, reopened: 0 };
@@ -138,8 +144,11 @@ export async function postReview(client, review, {
     const existing = threads.get(finding.fingerprint);
     if (existing) {
       if (existing.resolved && !existing.reopenedBefore) {
-        await client.replyToDiscussion(existing.id, reopenBody(sha));
+        // Reopen first. The reply carries the sentinel that stops later
+        // reopens, so it is posted only once the reopen has succeeded; a
+        // failed reopen leaves the thread as it was, to be retried.
         await client.setDiscussionResolved(existing.id, false);
+        await client.replyToDiscussion(existing.id, reopenBody(sha));
         result.reopened += 1;
         log(`reopened the thread for ${finding.path}: ${finding.title}`);
       } else {

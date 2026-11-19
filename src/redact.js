@@ -21,7 +21,12 @@ export function secretValues(env) {
   const values = new Set();
   for (const name of SECRET_ENV) {
     const value = env[name];
-    if (typeof value === "string" && value.trim().length >= MIN_SECRET_LENGTH) values.add(value);
+    if (typeof value !== "string") continue;
+    // Both spellings: the tool trims a token before using it, so the
+    // trimmed value is the one that can show up in output.
+    for (const v of [value, value.trim()]) {
+      if (v.trim().length >= MIN_SECRET_LENGTH) values.add(v);
+    }
   }
   return [...values];
 }

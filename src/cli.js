@@ -12,7 +12,7 @@ import { parseArgs } from "node:util";
 import { DEFAULT_REASONING_EFFORT, MODEL_PATTERN, REASONING_EFFORTS } from "./codex.js";
 import { diffPosition, mergeBase, repoRoot, GitError } from "./git.js";
 import { GitLabError, createClient } from "./gitlab.js";
-import { failureBody, postReview } from "./post.js";
+import { failureBody, postReview, scrubModelText, scrubReview } from "./post.js";
 import { makeRedactor, redactingStream, secretValues } from "./redact.js";
 import { TOKEN_ENV } from "./env.js";
 import { runReview } from "./review.js";
@@ -215,18 +215,21 @@ export async function main(argv, {
 } = {}) {
   // The one redaction point: everything main writes, on either stream and
   // in either format, goes through these two wrappers.
-  const redact = makeRedactor(secretValues(env));
-  const out = redactingStream(stdout, redact);
-  const err = redactingStream(stderr, redact);
+  // Printed text is also scrubbed of the marker prefix: error messages
+  // can quote model output, and the tool never prints a marker itself.
+  const secrets = makeRedactor(secretValues(env));
+  const printable = (text) => secrets(scrubModelText(text));
+  const out = redactingStream(stdout, printable);
+  const err = redactingStream(stderr, printable);
   try {
-    return await dispatch(argv, { stdout: out, stderr: err, env, cwd, signal, redact, fetchImpl });
+    return await dispatch(argv, { stdout: out, stderr: err, env, cwd, signal, secrets, fetchImpl });
   } catch (error) {
     err.write(`codex-mr-review: internal error: ${error?.stack ?? error}\n`);
     return EXIT_FAILURE;
   }
 }
 
-async function dispatch(argv, { stdout, stderr, env, cwd, signal, redact, fetchImpl }) {
+async function dispatch(argv, { stdout, stderr, env, cwd, signal, secrets, fetchImpl }) {
   const [command, ...rest] = argv;
 
   if (command === undefined || command === "-h" || command === "--help" || command === "help") {
@@ -261,18 +264,18 @@ async function dispatch(argv, { stdout, stderr, env, cwd, signal, redact, fetchI
       stderr.write(`codex-mr-review: ${err.message}\n`);
       return EXIT_USAGE;
     }
-    return runAndPost(options, { stdout, stderr, env, cwd, signal, redact, fetchImpl, target, shaInfo });
+    return runAndPost(options, { stdout, stderr, env, cwd, signal, secrets, fetchImpl, target, shaInfo });
   }
 
   stderr.write(`codex-mr-review: unknown command "${command}"\n\n${MAIN_HELP}`);
   return EXIT_USAGE;
 }
 
-function startReview(options, { stderr, env, cwd, signal }) {
+async function startReview(options, { stderr, env, cwd, signal }) {
   // Codex's event stream does not name the model it used (thread.started
   // carries only a thread id), so an unset --model is reported as such.
   stderr.write(`codex-mr-review: reviewing with model ${options.model ?? "Codex's default"}, reasoning effort ${options.reasoningEffort}\n`);
-  return runReview({
+  const outcome = await runReview({
     base: options.base,
     head: options.head,
     timeoutSeconds: options.timeoutSeconds,
@@ -283,6 +286,9 @@ function startReview(options, { stderr, env, cwd, signal }) {
     signal,
     warn: (message) => stderr.write(`codex-mr-review: warning: ${message}\n`),
   });
+  // The one scrub point for everything that came from Codex: every
+  // string in the review, before it is printed or posted.
+  return outcome.ok ? { ok: true, review: scrubReview(outcome.review) } : outcome;
 }
 
 async function runDryRun(options, { stdout, stderr, env, cwd, signal }) {
@@ -330,9 +336,12 @@ function positionFor(root, review) {
   };
 }
 
-async function runAndPost(options, { stdout, stderr, env, cwd, signal, redact, fetchImpl, target, shaInfo }) {
+async function runAndPost(options, { stdout, stderr, env, cwd, signal, secrets, fetchImpl, target, shaInfo }) {
   const log = (message) => stderr.write(`codex-mr-review: ${message}\n`);
-  const client = createClient({ ...target, redact, fetchImpl });
+  // Outbound bodies are redacted of secrets only. Model text in them was
+  // already scrubbed by startReview, and the summary carries the tool's
+  // own marker, which must survive.
+  const client = createClient({ ...target, redact: secrets, fetchImpl });
   let self;
   let mr;
   try {

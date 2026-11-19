@@ -58,6 +58,18 @@ test("relativePath strips any spelling of the worktree root", () => {
   assert.throws(() => relativePath("../a.js", roots), FindingError);
 });
 
+test("relativePath refuses a newline, a control character or an angle bracket", () => {
+  const roots = ["/w"];
+  for (const bad of ["src/a\nb.js", "/w/src/a\r.js", "src/\u0000.js", "src/\u007f.js", "src/<!-- x -->.js", "src/a>b.js"]) {
+    assert.throws(() => relativePath(bad, roots), /control character or an angle bracket/, JSON.stringify(bad));
+  }
+  assert.equal(relativePath("src/ünïcode file.js", roots), "src/ünïcode file.js");
+});
+
+test("normaliseFinding fails on a path with a newline", () => {
+  assert.throws(() => normaliseFinding({ rawTitle: "[P1] T", location: "src/a\nb.js:1-1", body: "" }, ctx), FindingError);
+});
+
 test("the priority levels are P0 to P3 and nothing else", () => {
   assert.deepEqual(PRIORITIES, ["P0", "P1", "P2", "P3"]);
   for (const p of PRIORITIES) assert.equal(splitPriority(`[${p}] T`).priority, p);

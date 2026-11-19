@@ -18,14 +18,16 @@ export const POSITION_ERROR = {
 //   rejectPosition  (position) => true to answer a positioned thread
 //                   with a 400, as GitLab does for a line outside the diff
 //   fail            (method, path) => status to answer with instead
+//   redirect        (method, path) => a URL to answer with a 302 to
 export async function startMockGitLab({
   token = MOCK_TOKEN,
   user = { id: 7, username: "reviewer-bot" },
   mr = {},
   rejectPosition = () => false,
   fail = () => null,
+  redirect = () => null,
 } = {}) {
-  const state = { requests: [], discussions: [], notes: [], awards: [], user, mr, rejectPosition, fail };
+  const state = { requests: [], discussions: [], notes: [], awards: [], user, mr, rejectPosition, fail, redirect };
   const nextId = () => randomBytes(20).toString("hex");
 
   const server = createServer((req, res) => {
@@ -41,6 +43,8 @@ export async function startMockGitLab({
         res.writeHead(status, { "Content-Type": "application/json", ...headers });
         res.end(data === undefined ? "" : JSON.stringify(data));
       };
+      const to = state.redirect(req.method, url.pathname);
+      if (to) return send(302, { message: "302 Found" }, { Location: to });
       if (req.headers["private-token"] !== token) return send(401, { message: "401 Unauthorized" });
       const forced = state.fail(req.method, url.pathname);
       if (forced) return send(forced, { message: `${forced} forced by the test` });

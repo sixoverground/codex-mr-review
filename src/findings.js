@@ -38,7 +38,21 @@ export function parseLocation(location) {
 // Makes a path repository-relative with forward slashes. Codex reports
 // absolute paths inside the worktree; roots lists every spelling of the
 // worktree path (for example with and without /private on macOS).
+// Characters no path from Codex may contain: a newline or any other control
+// character, or an angle bracket (which could open markup such as a
+// hidden comment once the path is posted).
+function unsafePath(path) {
+  for (const ch of path) {
+    const code = ch.codePointAt(0);
+    if (code < 0x20 || code === 0x7f || ch === "<" || ch === ">") return true;
+  }
+  return false;
+}
+
 export function relativePath(path, roots) {
+  if (unsafePath(path)) {
+    throw new FindingError(`finding has a path with a control character or an angle bracket: ${JSON.stringify(path)}`);
+  }
   let p = path;
   if (isAbsolute(p)) {
     const root = roots.find((r) => p.startsWith(r.endsWith(sep) ? r : r + sep));

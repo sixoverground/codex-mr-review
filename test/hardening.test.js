@@ -106,6 +106,11 @@ test("secretValues takes the token variables and API keys, ignoring short or emp
   assert.deepEqual(secretValues({ GITLAB_TOKEN: "", CI_JOB_TOKEN: "       x" }), []);
 });
 
+test("secretValues registers both the raw and the trimmed value of every secret variable", () => {
+  const values = secretValues({ GITLAB_TOKEN: "glpat-abcdefgh\n", OPENAI_API_KEY: "  sk-12345678  ", CI_JOB_TOKEN: "short\n" });
+  assert.deepEqual(values.sort(), ["  sk-12345678  ", "glpat-abcdefgh", "glpat-abcdefgh\n", "sk-12345678"].sort());
+});
+
 test("makeRedactor catches the JSON-escaped form and replaces the longest match first", () => {
   const redact = makeRedactor(['abc"def\\ghi', "token-1234", "token-1234-long"]);
   assert.equal(redact(JSON.stringify({ v: 'x abc"def\\ghi y' })), JSON.stringify({ v: `x ${REDACTED} y` }));

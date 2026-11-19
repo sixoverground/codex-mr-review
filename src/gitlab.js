@@ -12,12 +12,26 @@
 //
 // The token goes only in the PRIVATE-TOKEN header. It is never put in a
 // URL, a body or an error message, and every body this client sends passes
-// through the redactor first.
+// through the redactor first. Redirects are never followed: fetch would
+// resend the header to wherever the redirect points, so any 3xx is an
+// error naming only the status and the target's origin.
 
 export const REQUEST_TIMEOUT_MS = 30_000;
 const PER_PAGE = 100;
 const MAX_PAGES = 100;
 const ERROR_TEXT_LIMIT = 300;
+
+// " to <origin>" for a redirect's Location, never its path or query, which
+// could carry anything.
+function redirectOrigin(res, url) {
+  const location = res.headers.get("location");
+  if (!location) return "";
+  try {
+    return ` to ${new URL(location, url).origin}`;
+  } catch {
+    return " to an unparseable location";
+  }
+}
 
 export class GitLabError extends Error {
   constructor(message, status) {
@@ -43,9 +57,19 @@ export function createClient({ baseUrl, token, project, mr, redact = (s) => s, f
     }
     let res;
     try {
-      res = await fetchImpl(url, { method, headers, body: payload, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+      res = await fetchImpl(url, {
+        method,
+        headers,
+        body: payload,
+        redirect: "manual",
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
     } catch (err) {
       throw new GitLabError(`${method} ${path} failed: ${err.message}`, null);
+    }
+    if (res.status >= 300 && res.status < 400 || res.type === "opaqueredirect") {
+      await res.body?.cancel();
+      throw new GitLabError(`${method} ${path} was redirected (${res.status || "3xx"})${redirectOrigin(res, url)}; redirects are not followed`, res.status);
     }
     const text = await res.text();
     if (!res.ok) {
