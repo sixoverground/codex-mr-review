@@ -1,0 +1,11 @@
+{
+  "codex_version": "codex-cli 0.147.0",
+  "recorded_on": "2026-11-17",
+  "description": "Raw output of the real codex exec review that `codex-mr-review review --base a488c33 --head feature --dry-run` started against a throwaway repository whose feature branch adds sumFirst() with an off-by-one loop bound (i <= n). Recorded by a shim placed first on PATH that ran /opt/homebrew/bin/codex and kept a copy of its stdout and its --output-last-message file. Nothing is edited.",
+  "args": ["exec", "--sandbox", "read-only", "--ephemeral", "--ignore-user-config", "--json", "--output-last-message", "<scratch>/last-message.txt", "review", "--base", "a488c332d781dbd38a45676dc6c6e6aa520ccc59"],
+  "exit_code": 0,
+  "stderr": "",
+  "worktree": "/private/tmp/codex-mr-review-YF5anb/worktree",
+  "events": "review-planted-bug.events.jsonl",
+  "last_message": "review-planted-bug.last-message.txt"
+}

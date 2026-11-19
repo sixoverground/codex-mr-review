@@ -15,6 +15,7 @@
   "files": [
     "src",
     "docs",
+    "schema",
     "LICENSE",
     "README.md",
     "SECURITY.md"
@@ -23,7 +24,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test",
+    "test": "node --test test/*.test.js",
     "lint": "eslint ."
   },
   "devDependencies": {

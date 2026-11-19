@@ -13,10 +13,10 @@ function run(args) {
   return spawnSync(process.execPath, [CLI, ...args], { encoding: "utf8" });
 }
 
-function capture(argv) {
+async function capture(argv) {
   let out = "";
   let err = "";
-  const code = main(argv, {
+  const code = await main(argv, {
     stdout: { write: (s) => { out += s; } },
     stderr: { write: (s) => { err += s; } },
   });
@@ -40,40 +40,41 @@ for (const args of [["--help"], ["review", "--help"]]) {
   });
 }
 
-test("--version prints the package.json version", () => {
+test("--version prints the package.json version", async () => {
   const r = run(["--version"]);
   assert.equal(r.status, EXIT_OK);
   assert.equal(r.stdout.trim(), PKG.version);
-  assert.equal(capture(["-v"]).out.trim(), PKG.version);
+  assert.equal((await capture(["-v"])).out.trim(), PKG.version);
 });
 
-test("no command prints help and exits with a usage error", () => {
-  const r = capture([]);
+test("no command prints help and exits with a usage error", async () => {
+  const r = await capture([]);
   assert.equal(r.code, EXIT_USAGE);
   assert.match(r.out, /Commands:/);
 });
 
-test("an unknown command is a usage error", () => {
-  const r = capture(["frobnicate"]);
+test("an unknown command is a usage error", async () => {
+  const r = await capture(["frobnicate"]);
   assert.equal(r.code, EXIT_USAGE);
   assert.match(r.err, /unknown command "frobnicate"/);
 });
 
-test("review with valid flags exits non-zero with not implemented", () => {
-  const r = run(["review", "--base", "main", "--dry-run"]);
+test("review without --dry-run exits non-zero because posting is not implemented", () => {
+  const r = run(["review", "--base", "main"]);
   assert.equal(r.status, EXIT_FAILURE);
   assert.match(r.stderr, /not implemented/);
   assert.equal(r.stdout, "");
 });
 
-test("a bare review exits non-zero with not implemented", () => {
-  const r = run(["review"]);
-  assert.equal(r.status, EXIT_FAILURE);
-  assert.match(r.stderr, /not implemented/);
+test("review without --base is a usage error", () => {
+  const r = run(["review", "--dry-run"]);
+  assert.equal(r.status, EXIT_USAGE);
+  assert.match(r.stderr, /--base is required/);
+  assert.equal(r.stdout, "");
 });
 
-test("review rejects an unknown flag", () => {
-  const r = capture(["review", "--base", "main", "--post-to-github"]);
+test("review rejects an unknown flag", async () => {
+  const r = await capture(["review", "--base", "main", "--post-to-github"]);
   assert.equal(r.code, EXIT_USAGE);
 });
 
@@ -87,7 +88,27 @@ test("parseReviewArgs applies defaults", () => {
     reviewer: "codex",
     cleanEmoji: false,
     timeoutSeconds: 900,
+    model: null,
+    reasoningEffort: "high",
   });
+});
+
+test("parseReviewArgs reads --model and --reasoning-effort", () => {
+  const o = parseReviewArgs(["--base", "main", "--model", "some-model.1", "--reasoning-effort", "xhigh"]);
+  assert.equal(o.model, "some-model.1");
+  assert.equal(o.reasoningEffort, "xhigh");
+  for (const level of ["none", "minimal", "low", "medium", "high", "xhigh", "max"]) {
+    assert.equal(parseReviewArgs(["--base", "main", "--reasoning-effort", level]).reasoningEffort, level);
+  }
+});
+
+test("parseReviewArgs rejects an unknown reasoning effort or a bad model name", () => {
+  for (const bad of ["extreme", "HIGH", "", "high "]) {
+    assert.throws(() => parseReviewArgs(["--base", "main", "--reasoning-effort", bad]), /--reasoning-effort/, bad);
+  }
+  for (const bad of ["", "-c", "--json", "a model", 'x"y']) {
+    assert.throws(() => parseReviewArgs(["--base", "main", `--model=${bad}`]), /--model/, bad);
+  }
 });
 
 test("parseReviewArgs reads every flag", () => {

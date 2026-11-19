@@ -7,6 +7,7 @@ const nodeGlobals = {
   fetch: "readonly",
   setTimeout: "readonly",
   clearTimeout: "readonly",
+  AbortController: "readonly",
 };
 
 export default [

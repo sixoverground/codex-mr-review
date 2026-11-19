@@ -1,0 +1,11 @@
+{
+  "codex_version": "codex-cli 0.147.0",
+  "recorded_on": "2026-11-17",
+  "description": "Raw output of a second real codex exec review of the same throwaway repository, started by `codex-mr-review review --base a488c33 --dry-run` with the feature branch checked out. This run reported two findings, so it shows the layout Codex uses for more than one. Recorded by the same PATH shim as review-planted-bug. Nothing is edited.",
+  "args": ["exec", "--sandbox", "read-only", "--ephemeral", "--ignore-user-config", "--json", "--output-last-message", "<scratch>/last-message.txt", "review", "--base", "a488c332d781dbd38a45676dc6c6e6aa520ccc59"],
+  "exit_code": 0,
+  "stderr": "",
+  "worktree": "/private/tmp/codex-mr-review-cW3vaP/worktree",
+  "events": "review-two-findings.events.jsonl",
+  "last_message": "review-two-findings.last-message.txt"
+}

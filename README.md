@@ -2,7 +2,7 @@
 
 Run the Codex CLI's review mode in GitLab CI and post findings to merge requests.
 
-**Status: scaffold.** The command line parses its arguments, and `review` exits with "not implemented". Nothing is reviewed or posted yet.
+**Status: dry run only.** `review --dry-run` runs Codex's review mode on a change and prints the findings. Nothing is posted yet: `review` without `--dry-run` exits with "not implemented".
 
 ## What it is for
 
@@ -27,9 +27,35 @@ codex-mr-review --help
 codex-mr-review --version
 codex-mr-review review --base <ref> [--head <ref>] [--dry-run] [--format text|json]
                        [--reviewer <name>] [--clean-emoji] [--timeout <seconds>]
+                       [--model <name>] [--reasoning-effort <level>]
 ```
 
-`--dry-run` will print findings locally without posting. Install instructions and the GitLab CI template will follow once the tool does something.
+`--dry-run` prints the findings locally and posts nothing. `--base` is required. Run it from inside the repository; it reviews `--head` (default `HEAD`) against `--base` in a temporary worktree, with every `AGENTS.md` and `AGENTS.override.md` (at any depth) taken from `--base`, and removes the worktree afterwards.
+
+- `--format text` prints each finding under its location, laid out like a cloud Codex comment, then one summary. `--format json` prints one object valid against [schema/review-output.schema.json](schema/review-output.schema.json). See [docs/output-format.md](docs/output-format.md).
+- Exit status 0 means the review completed, with or without findings. Any failure (Codex exits non-zero, times out, or returns something that does not parse, including a priority outside P0 to P3) exits 1 and prints no findings.
+- It needs the `codex` CLI on `PATH`, logged in or with `CODEX_API_KEY` or `OPENAI_API_KEY` set. It is tested with codex-cli 0.147.x and warns on any other version. What that version prints is recorded in [docs/codex-output.md](docs/codex-output.md).
+
+### Model and reasoning effort
+
+Codex always runs with `--ignore-user-config`, so nothing in `~/.codex/config.toml` (model, reasoning effort, MCP servers, profiles) affects a review. Whatever should differ from Codex's built-in defaults has to be passed to this tool:
+
+- `--model <name>` picks the model Codex reviews with. Unset, Codex uses its own default model.
+- `--reasoning-effort <level>` sets how hard the model thinks: `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`. Any other value exits 2 before Codex starts.
+
+The effort defaults to `high`, not Codex's built-in default. In a side-by-side check against cloud Codex on real changes, the local review at the built-in settings missed most of cloud Codex's findings. A review runs once per change and its misses are expensive, so spending more reasoning on it is the better trade. `xhigh` and `max` are accepted for slower, deeper runs.
+
+The tool prints the model and effort it asked for on stderr (`reviewing with model Codex's default, reasoning effort high`), and `--format json` includes them as `model` (or `null`) and `reasoning_effort`. Codex does not report which model it used, so an unset `--model` is reported as Codex's default rather than a name. Details are in [docs/codex-output.md](docs/codex-output.md).
+
+### Environment
+
+Codex runs with an allowlisted environment (`src/env.js`): `PATH`, `HOME`, locale and temp variables, `CODEX_HOME`, `CODEX_API_KEY`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, proxy variables and `SSL_CERT_FILE` / `SSL_CERT_DIR`. Nothing else reaches it. In particular `GITLAB_TOKEN`, `CI_JOB_TOKEN` and `CODEX_MR_REVIEW_TOKEN` never do.
+
+`CODEX_MR_REVIEW_TOKEN` is the name reserved for the GitLab token this tool will use to post. Nothing reads it yet.
+
+The values of those three tokens and of `OPENAI_API_KEY` and `CODEX_API_KEY` are replaced with `[redacted]` in everything the tool prints. See [SECURITY.md](SECURITY.md).
+
+Install instructions and the GitLab CI template will follow once the tool posts.
 
 ## Development
 

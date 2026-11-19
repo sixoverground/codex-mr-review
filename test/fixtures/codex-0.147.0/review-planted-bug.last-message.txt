@@ -1,0 +1,6 @@
+The new `sumFirst` helper has an off-by-one error that produces incorrect results for ordinary inputs and can return `NaN` when asked to sum the entire array.
+
+Review comment:
+
+- [P1] Stop sumFirst after n elements — /private/tmp/codex-mr-review-YF5anb/worktree/src/stats.js:26-26
+  For any positive `n`, this loop includes index `n`, so `sumFirst([1, 2, 3], 2)` returns `6` instead of `3`. When `n === values.length`, it also adds `undefined` and returns `NaN`; the loop bound should exclude `n`.

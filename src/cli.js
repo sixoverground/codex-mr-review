@@ -1,13 +1,19 @@
 #!/usr/bin/env node
 // codex-mr-review command line entry point.
 //
-// This is the scaffold: it parses arguments and validates them, and the
-// review subcommand stops with "not implemented". The runner, the GitLab
-// client and the marker arrive in later changes.
+// `review --dry-run` runs Codex's review mode and prints the findings. The
+// GitLab client and the marker arrive in later changes, so a review without
+// --dry-run stops with "not implemented".
 
 import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+
+import { DEFAULT_REASONING_EFFORT, MODEL_PATTERN, REASONING_EFFORTS } from "./codex.js";
+import { makeRedactor, redactingStream, secretValues } from "./redact.js";
+import { runReview } from "./review.js";
+import { renderText } from "./render.js";
+import { validate } from "./schema.js";
 
 export const EXIT_OK = 0;
 export const EXIT_FAILURE = 1;
@@ -24,6 +30,8 @@ const REVIEW_OPTIONS = {
   reviewer: { type: "string", default: "codex" },
   "clean-emoji": { type: "boolean", default: false },
   timeout: { type: "string", default: "900" },
+  model: { type: "string" },
+  "reasoning-effort": { type: "string", default: DEFAULT_REASONING_EFFORT },
   help: { type: "boolean", short: "h", default: false },
 };
 
@@ -43,6 +51,12 @@ const REVIEW_OPTIONS_HELP = `Review options:
                        has no findings
   --timeout <seconds>  Give up on the review after this many seconds
                        (default: 900)
+  --model <name>       Model Codex reviews with (default: Codex's own
+                       default model; ~/.codex/config.toml is ignored)
+  --reasoning-effort <level>
+                       Reasoning effort for the review, one of
+                       ${REASONING_EFFORTS.join(", ")}
+                       (default: ${DEFAULT_REASONING_EFFORT})
 `;
 
 export const MAIN_HELP = `Usage: codex-mr-review <command> [options]
@@ -77,13 +91,20 @@ export function parseReviewArgs(args) {
   }
   const v = parsed.values;
   if (v.help) return { help: true };
-  // --base becomes mandatory when the runner lands. Until then a bare
-  // "review" reaches the not-implemented exit like any other valid call.
+  if (v.base === undefined || v.base === "") {
+    throw new UsageError("review: --base is required");
+  }
   if (!FORMATS.includes(v.format)) {
     throw new UsageError(`review: --format must be one of ${FORMATS.join(", ")}, got "${v.format}"`);
   }
   if (!REVIEWER_PATTERN.test(v.reviewer)) {
     throw new UsageError(`review: --reviewer must match [a-z0-9-]+, got "${v.reviewer}"`);
+  }
+  if (!REASONING_EFFORTS.includes(v["reasoning-effort"])) {
+    throw new UsageError(`review: --reasoning-effort must be one of ${REASONING_EFFORTS.join(", ")}, got "${v["reasoning-effort"]}"`);
+  }
+  if (v.model !== undefined && !MODEL_PATTERN.test(v.model)) {
+    throw new UsageError(`review: --model must be a model name (letters, digits, ".", "_", ":" and "-", not starting with "-"), got "${v.model}"`);
   }
   const timeout = Number(v.timeout);
   if (!Number.isInteger(timeout) || timeout <= 0) {
@@ -91,20 +112,46 @@ export function parseReviewArgs(args) {
   }
   return {
     help: false,
-    base: v.base ?? null,
+    base: v.base,
     head: v.head ?? "HEAD",
     dryRun: v["dry-run"],
     format: v.format,
     reviewer: v.reviewer,
     cleanEmoji: v["clean-emoji"],
     timeoutSeconds: timeout,
+    model: v.model ?? null,
+    reasoningEffort: v["reasoning-effort"],
   };
 }
 
+export function readOutputSchema() {
+  return JSON.parse(readFileSync(new URL("../schema/review-output.schema.json", import.meta.url), "utf8"));
+}
+
 // Runs the CLI against argv (without the node and script entries) and
-// returns an exit code. Output goes through the injected streams so tests
-// can capture it.
-export function main(argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
+// resolves with an exit code. Output goes through the injected streams so
+// tests can capture it.
+export async function main(argv, {
+  stdout = process.stdout,
+  stderr = process.stderr,
+  env = process.env,
+  cwd = process.cwd(),
+  signal,
+} = {}) {
+  // The one redaction point: everything main writes, on either stream and
+  // in either format, goes through these two wrappers.
+  const redact = makeRedactor(secretValues(env));
+  const out = redactingStream(stdout, redact);
+  const err = redactingStream(stderr, redact);
+  try {
+    return await dispatch(argv, { stdout: out, stderr: err, env, cwd, signal });
+  } catch (error) {
+    err.write(`codex-mr-review: internal error: ${error?.stack ?? error}\n`);
+    return EXIT_FAILURE;
+  }
+}
+
+async function dispatch(argv, { stdout, stderr, env, cwd, signal }) {
   const [command, ...rest] = argv;
 
   if (command === undefined || command === "-h" || command === "--help" || command === "help") {
@@ -128,12 +175,48 @@ export function main(argv, { stdout = process.stdout, stderr = process.stderr } 
       stdout.write(REVIEW_HELP);
       return EXIT_OK;
     }
-    stderr.write("codex-mr-review: review is not implemented yet\n");
-    return EXIT_FAILURE;
+    if (!options.dryRun) {
+      stderr.write("codex-mr-review: posting to GitLab is not implemented yet; pass --dry-run\n");
+      return EXIT_FAILURE;
+    }
+    return runDryRun(options, { stdout, stderr, env, cwd, signal });
   }
 
   stderr.write(`codex-mr-review: unknown command "${command}"\n\n${MAIN_HELP}`);
   return EXIT_USAGE;
+}
+
+async function runDryRun(options, { stdout, stderr, env, cwd, signal }) {
+  // Codex's event stream does not name the model it used (thread.started
+  // carries only a thread id), so an unset --model is reported as such.
+  stderr.write(`codex-mr-review: reviewing with model ${options.model ?? "Codex's default"}, reasoning effort ${options.reasoningEffort}\n`);
+  const outcome = await runReview({
+    base: options.base,
+    head: options.head,
+    timeoutSeconds: options.timeoutSeconds,
+    model: options.model,
+    reasoningEffort: options.reasoningEffort,
+    cwd,
+    env,
+    signal,
+    warn: (message) => stderr.write(`codex-mr-review: warning: ${message}\n`),
+  });
+  // A failed review prints no findings: only the reason, on stderr.
+  if (!outcome.ok) {
+    stderr.write(`codex-mr-review: review failed: ${outcome.error}\n`);
+    return EXIT_FAILURE;
+  }
+  if (options.format === "json") {
+    const errors = validate(readOutputSchema(), outcome.review);
+    if (errors.length > 0) {
+      stderr.write(`codex-mr-review: review failed: output does not match its schema: ${errors.join("; ")}\n`);
+      return EXIT_FAILURE;
+    }
+    stdout.write(`${JSON.stringify(outcome.review, null, 2)}\n`);
+  } else {
+    stdout.write(renderText(outcome.review));
+  }
+  return EXIT_OK;
 }
 
 function isEntryPoint() {
@@ -146,5 +229,9 @@ function isEntryPoint() {
 }
 
 if (isEntryPoint()) {
-  process.exitCode = main(process.argv.slice(2));
+  // Ctrl-C or a CI cancel stops codex and still removes the worktree.
+  const controller = new AbortController();
+  process.once("SIGINT", () => controller.abort());
+  process.once("SIGTERM", () => controller.abort());
+  process.exitCode = await main(process.argv.slice(2), { signal: controller.signal });
 }
