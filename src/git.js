@@ -270,3 +270,42 @@ export function readAtCommit(cwd, commit, path) {
   if (!blobExists(cwd, commit, path)) return null;
   return git(["show", `${commit}:${path}`], cwd);
 }
+
+// Where a line of the head file sits in the diff from..to, for a GitLab
+// text position. Returns { old_path, kind, old_line } where kind is
+// "added" (only new_line is set on the position), "unchanged" (both lines
+// are set; old_line is where the line was in from) or "new-file".
+// old_path is the file's path in from, which differs after a rename.
+export function diffPosition(cwd, from, to, path, newLine) {
+  const renames = git(["diff", "--no-ext-diff", "-M", "--name-status", "-z", from, to], cwd).split("\0");
+  let oldPath = path;
+  let added = false;
+  for (let i = 0; i < renames.length; i++) {
+    const status = renames[i];
+    if (status.startsWith("R") || status.startsWith("C")) {
+      if (renames[i + 2] === path) oldPath = renames[i + 1];
+      i += 2;
+    } else if (status !== "") {
+      if (status === "A" && renames[i + 1] === path) added = true;
+      i += 1;
+    }
+  }
+  if (added) return { old_path: path, kind: "new-file", old_line: null };
+
+  const diff = git(["diff", "--no-ext-diff", "--no-color", "-U0", "-M", from, to, "--", `:(literal)${oldPath}`, `:(literal)${path}`], cwd);
+  let offset = 0;
+  for (const m of diff.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)) {
+    const oldCount = m[2] === undefined ? 1 : Number(m[2]);
+    const newStart = Number(m[3]);
+    const newCount = m[4] === undefined ? 1 : Number(m[4]);
+    if (newCount > 0 && newLine >= newStart && newLine < newStart + newCount) {
+      return { old_path: oldPath, kind: "added", old_line: null };
+    }
+    // A hunk lies before the line when it ends before it. A pure deletion
+    // (+c,0) sits after new line c.
+    const before = newCount > 0 ? newStart + newCount - 1 < newLine : newStart < newLine;
+    if (!before) break;
+    offset += oldCount - newCount;
+  }
+  return { old_path: oldPath, kind: "unchanged", old_line: newLine + offset };
+}

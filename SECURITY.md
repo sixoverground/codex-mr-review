@@ -17,6 +17,10 @@ This tool will hold a GitLab token with permission to comment on merge requests,
 - **Nothing Codex starts outlives the review.** Codex runs in its own process group, and the whole group gets SIGKILL when Codex exits, on every path, before the worktree is removed.
 - **The reviewer's own Codex config is not used.** Codex runs with `--ignore-user-config`, so MCP servers and model settings from `~/.codex/config.toml` do not apply to a review.
 
+- **The marker is the tool's, not the model's.** It is built by the tool from the CI sha (or the checkout's), only after Codex exited successfully and every finding was posted, and it goes in a top-level note. A failed run posts no marker.
+- **Only the tool's own threads count for dedupe.** A finding is skipped or reopened only when its fingerprint is on a thread the token's own account started, so a fingerprint pasted by someone else cannot hide a finding. Model text cannot carry a fingerprint either: the prefix is scrubbed.
+- **Post as a dedicated identity.** Anyone who can comment can type a marker by hand, so a consumer should accept a marker only from the account the tool posts as. Use a bot user or a project access token for `CODEX_MR_REVIEW_TOKEN`, not a person's token.
+
 ## Known limits
 
 Codex's read-only sandbox blocks writes and network access, but it can still read any file the runner's user can read. Run the runner as a dedicated user with access to nothing else, especially on a personal machine with a shell executor. Anything a finding quotes is visible to everyone who can see the merge request.

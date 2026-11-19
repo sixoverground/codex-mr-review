@@ -1,17 +1,22 @@
 #!/usr/bin/env node
 // codex-mr-review command line entry point.
 //
-// `review --dry-run` runs Codex's review mode and prints the findings. The
-// GitLab client and the marker arrive in later changes, so a review without
-// --dry-run stops with "not implemented".
+// `review` runs Codex's review mode and posts the findings, a summary and
+// the review marker to a GitLab merge request. `review --dry-run` prints
+// the findings instead and makes no network call.
 
 import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { DEFAULT_REASONING_EFFORT, MODEL_PATTERN, REASONING_EFFORTS } from "./codex.js";
+import { diffPosition, mergeBase, repoRoot, GitError } from "./git.js";
+import { GitLabError, createClient } from "./gitlab.js";
+import { failureBody, postReview } from "./post.js";
 import { makeRedactor, redactingStream, secretValues } from "./redact.js";
+import { TOKEN_ENV } from "./env.js";
 import { runReview } from "./review.js";
+import { runSync } from "./exec.js";
 import { renderText } from "./render.js";
 import { validate } from "./schema.js";
 
@@ -32,6 +37,9 @@ const REVIEW_OPTIONS = {
   timeout: { type: "string", default: "900" },
   model: { type: "string" },
   "reasoning-effort": { type: "string", default: DEFAULT_REASONING_EFFORT },
+  "gitlab-url": { type: "string" },
+  project: { type: "string" },
+  mr: { type: "string" },
   help: { type: "boolean", short: "h", default: false },
 };
 
@@ -57,6 +65,15 @@ const REVIEW_OPTIONS_HELP = `Review options:
                        Reasoning effort for the review, one of
                        ${REASONING_EFFORTS.join(", ")}
                        (default: ${DEFAULT_REASONING_EFFORT})
+  --gitlab-url <url>   GitLab instance, such as https://gitlab.com
+                       (default: $CI_SERVER_URL)
+  --project <id|path>  Project id or path, such as group/project
+                       (default: $CI_MERGE_REQUEST_PROJECT_ID, then
+                       $CI_PROJECT_ID)
+  --mr <iid>           Merge request iid (default: $CI_MERGE_REQUEST_IID)
+
+Without --dry-run the review is posted to the merge request, using the
+token in $${TOKEN_ENV}.
 `;
 
 export const MAIN_HELP = `Usage: codex-mr-review <command> [options]
@@ -106,6 +123,9 @@ export function parseReviewArgs(args) {
   if (v.model !== undefined && !MODEL_PATTERN.test(v.model)) {
     throw new UsageError(`review: --model must be a model name (letters, digits, ".", "_", ":" and "-", not starting with "-"), got "${v.model}"`);
   }
+  if (v.mr !== undefined && !/^[1-9][0-9]*$/.test(v.mr)) {
+    throw new UsageError(`review: --mr must be a merge request iid (a positive whole number), got "${v.mr}"`);
+  }
   const timeout = Number(v.timeout);
   if (!Number.isInteger(timeout) || timeout <= 0) {
     throw new UsageError(`review: --timeout must be a positive whole number of seconds, got "${v.timeout}"`);
@@ -121,7 +141,61 @@ export function parseReviewArgs(args) {
     timeoutSeconds: timeout,
     model: v.model ?? null,
     reasoningEffort: v["reasoning-effort"],
+    gitlabUrl: v["gitlab-url"] ?? null,
+    project: v.project ?? null,
+    mr: v.mr ?? null,
   };
+}
+
+const SHA_RE = /^[0-9a-f]{40}$/;
+
+function nonEmpty(value) {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
+// Where to post, from the flags or else the CI variables. Throws
+// UsageError naming what is missing.
+export function gitlabTarget(options, env) {
+  const baseUrl = nonEmpty(options.gitlabUrl) ?? nonEmpty(env.CI_SERVER_URL);
+  const project = nonEmpty(options.project) ?? nonEmpty(env.CI_MERGE_REQUEST_PROJECT_ID) ?? nonEmpty(env.CI_PROJECT_ID);
+  const mr = nonEmpty(options.mr) ?? nonEmpty(env.CI_MERGE_REQUEST_IID);
+  const token = nonEmpty(env[TOKEN_ENV]);
+  const missing = [];
+  if (!baseUrl) missing.push("--gitlab-url or CI_SERVER_URL");
+  if (!project) missing.push("--project or CI_PROJECT_ID");
+  if (!mr) missing.push("--mr or CI_MERGE_REQUEST_IID");
+  if (!token) missing.push(TOKEN_ENV);
+  if (missing.length > 0) {
+    throw new UsageError(`review: posting needs ${missing.join(", ")} (or pass --dry-run)`);
+  }
+  let url;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    throw new UsageError(`review: the GitLab URL "${baseUrl}" is not a URL`);
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new UsageError(`review: the GitLab URL must be http or https, got "${baseUrl}"`);
+  }
+  if (!/^[1-9][0-9]*$/.test(mr)) throw new UsageError(`review: the merge request iid must be a positive whole number, got "${mr}"`);
+  return { baseUrl: url.href.replace(/\/+$/, ""), project, mr, token };
+}
+
+// The sha the marker names: the pipeline's, never the model's.
+// CI_MERGE_REQUEST_SOURCE_BRANCH_SHA when set (the branch head in a
+// merged-results pipeline), else CI_COMMIT_SHA, else the checked-out
+// commit. Returns { sha, source }.
+export function markerSha(env, cwd) {
+  for (const name of ["CI_MERGE_REQUEST_SOURCE_BRANCH_SHA", "CI_COMMIT_SHA"]) {
+    const value = nonEmpty(env[name]);
+    if (value === null) continue;
+    if (!SHA_RE.test(value)) throw new UsageError(`review: ${name} is not a full lowercase 40 character sha: "${value}"`);
+    return { sha: value, source: name };
+  }
+  const r = runSync("git", ["rev-parse", "--verify", "HEAD^{commit}"], { cwd });
+  const sha = String(r.stdout).trim();
+  if (r.status !== 0 || !SHA_RE.test(sha)) throw new UsageError("review: could not read the checked-out commit for the marker");
+  return { sha, source: "the checked-out commit" };
 }
 
 export function readOutputSchema() {
@@ -137,6 +211,7 @@ export async function main(argv, {
   env = process.env,
   cwd = process.cwd(),
   signal,
+  fetchImpl = globalThis.fetch,
 } = {}) {
   // The one redaction point: everything main writes, on either stream and
   // in either format, goes through these two wrappers.
@@ -144,14 +219,14 @@ export async function main(argv, {
   const out = redactingStream(stdout, redact);
   const err = redactingStream(stderr, redact);
   try {
-    return await dispatch(argv, { stdout: out, stderr: err, env, cwd, signal });
+    return await dispatch(argv, { stdout: out, stderr: err, env, cwd, signal, redact, fetchImpl });
   } catch (error) {
     err.write(`codex-mr-review: internal error: ${error?.stack ?? error}\n`);
     return EXIT_FAILURE;
   }
 }
 
-async function dispatch(argv, { stdout, stderr, env, cwd, signal }) {
+async function dispatch(argv, { stdout, stderr, env, cwd, signal, redact, fetchImpl }) {
   const [command, ...rest] = argv;
 
   if (command === undefined || command === "-h" || command === "--help" || command === "help") {
@@ -175,22 +250,29 @@ async function dispatch(argv, { stdout, stderr, env, cwd, signal }) {
       stdout.write(REVIEW_HELP);
       return EXIT_OK;
     }
-    if (!options.dryRun) {
-      stderr.write("codex-mr-review: posting to GitLab is not implemented yet; pass --dry-run\n");
-      return EXIT_FAILURE;
+    if (options.dryRun) return runDryRun(options, { stdout, stderr, env, cwd, signal });
+    let target;
+    let shaInfo;
+    try {
+      target = gitlabTarget(options, env);
+      shaInfo = markerSha(env, cwd);
+    } catch (err) {
+      if (!(err instanceof UsageError)) throw err;
+      stderr.write(`codex-mr-review: ${err.message}\n`);
+      return EXIT_USAGE;
     }
-    return runDryRun(options, { stdout, stderr, env, cwd, signal });
+    return runAndPost(options, { stdout, stderr, env, cwd, signal, redact, fetchImpl, target, shaInfo });
   }
 
   stderr.write(`codex-mr-review: unknown command "${command}"\n\n${MAIN_HELP}`);
   return EXIT_USAGE;
 }
 
-async function runDryRun(options, { stdout, stderr, env, cwd, signal }) {
+function startReview(options, { stderr, env, cwd, signal }) {
   // Codex's event stream does not name the model it used (thread.started
   // carries only a thread id), so an unset --model is reported as such.
   stderr.write(`codex-mr-review: reviewing with model ${options.model ?? "Codex's default"}, reasoning effort ${options.reasoningEffort}\n`);
-  const outcome = await runReview({
+  return runReview({
     base: options.base,
     head: options.head,
     timeoutSeconds: options.timeoutSeconds,
@@ -201,22 +283,103 @@ async function runDryRun(options, { stdout, stderr, env, cwd, signal }) {
     signal,
     warn: (message) => stderr.write(`codex-mr-review: warning: ${message}\n`),
   });
+}
+
+async function runDryRun(options, { stdout, stderr, env, cwd, signal }) {
+  const outcome = await startReview(options, { stderr, env, cwd, signal });
   // A failed review prints no findings: only the reason, on stderr.
   if (!outcome.ok) {
     stderr.write(`codex-mr-review: review failed: ${outcome.error}\n`);
     return EXIT_FAILURE;
   }
+  return printReview(options, outcome.review, { stdout, stderr });
+}
+
+function printReview(options, review, { stdout, stderr }) {
   if (options.format === "json") {
-    const errors = validate(readOutputSchema(), outcome.review);
+    const errors = validate(readOutputSchema(), review);
     if (errors.length > 0) {
       stderr.write(`codex-mr-review: review failed: output does not match its schema: ${errors.join("; ")}\n`);
       return EXIT_FAILURE;
     }
-    stdout.write(`${JSON.stringify(outcome.review, null, 2)}\n`);
+    stdout.write(`${JSON.stringify(review, null, 2)}\n`);
   } else {
-    stdout.write(renderText(outcome.review));
+    stdout.write(renderText(review));
   }
   return EXIT_OK;
+}
+
+// The text position for a finding, from the local diff between the
+// review's merge base and its head. Unchanged lines need old_line as well
+// as new_line; if the local diff cannot be read, new_line alone is tried
+// and a rejection falls back to a general thread.
+function positionFor(root, review) {
+  let from = null;
+  try { from = mergeBase(root, review.base, review.head); } catch { /* new_line only */ }
+  return (finding) => {
+    const pos = { new_path: finding.path, old_path: finding.path, new_line: finding.start_line };
+    if (from === null) return pos;
+    try {
+      const p = diffPosition(root, from, review.head, finding.path, finding.start_line);
+      pos.old_path = p.old_path;
+      if (p.kind === "unchanged") pos.old_line = p.old_line;
+    } catch (err) {
+      if (!(err instanceof GitError)) throw err;
+    }
+    return pos;
+  };
+}
+
+async function runAndPost(options, { stdout, stderr, env, cwd, signal, redact, fetchImpl, target, shaInfo }) {
+  const log = (message) => stderr.write(`codex-mr-review: ${message}\n`);
+  const client = createClient({ ...target, redact, fetchImpl });
+  let self;
+  let mr;
+  try {
+    self = await client.currentUser();
+    mr = await client.getMergeRequest();
+  } catch (err) {
+    if (!(err instanceof GitLabError)) throw err;
+    log(`could not read the merge request: ${err.message}`);
+    return EXIT_FAILURE;
+  }
+  log(`posting to merge request !${target.mr}; the marker will name ${shaInfo.sha} (from ${shaInfo.source})`);
+
+  const outcome = await startReview(options, { stderr, env, cwd, signal });
+  if (!outcome.ok) {
+    log(`review failed: ${outcome.error}`);
+    try {
+      await client.createNote(failureBody(outcome.error));
+      log("posted a failure note, with no marker");
+    } catch (err) {
+      if (!(err instanceof GitLabError)) throw err;
+      log(`could not post the failure note: ${err.message}`);
+    }
+    return EXIT_FAILURE;
+  }
+  const review = outcome.review;
+  if (review.head !== shaInfo.sha) {
+    log(`warning: the marker names ${shaInfo.sha} (from ${shaInfo.source}) but the reviewed tree is ${review.head}`);
+  }
+  const diffRefs = mr?.diff_refs?.base_sha && mr.diff_refs.start_sha && mr.diff_refs.head_sha ? mr.diff_refs : null;
+  if (!diffRefs) log("warning: the merge request has no diff_refs yet; findings are posted as general threads");
+
+  try {
+    await postReview(client, review, {
+      sha: shaInfo.sha,
+      reviewer: options.reviewer,
+      cleanEmoji: options.cleanEmoji,
+      selfId: self?.id,
+      diffRefs,
+      position: positionFor(repoRoot(cwd), review),
+      log,
+    });
+  } catch (err) {
+    if (!(err instanceof GitLabError)) throw err;
+    log(`posting failed, and no marker was posted: ${err.message}`);
+    return EXIT_FAILURE;
+  }
+  return printReview(options, review, { stdout, stderr });
 }
 
 function isEntryPoint() {
