@@ -83,6 +83,7 @@ test("parseReviewArgs applies defaults", () => {
     help: false,
     base: "abc123",
     head: "HEAD",
+    headExplicit: false,
     dryRun: false,
     format: "text",
     reviewer: "codex",

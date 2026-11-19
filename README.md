@@ -70,6 +70,8 @@ What it posts, in this order (layouts in [docs/output-format.md](docs/output-for
 
 The marker's sha is the pipeline's: `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` when set (the branch head in a merged-results pipeline), else `CI_COMMIT_SHA`, else the commit checked out where the tool runs. It is never read from model output. The marker is posted only after Codex exited successfully and every finding was posted. A failed review posts a short failure note with no marker and exits 1.
 
+Positions are sent only when the merge request's `diff_refs.head_sha` is the reviewed commit. If the merge request has moved on, findings are posted as general threads citing `path:line`, since a line number from one tree can land on the wrong line of another. If `--head` is passed and is not the pipeline's commit, the findings are still posted but the marker is withheld, the summary says why, and the tool exits 1. Without `--head` a mismatch only warns, because a merged-results pipeline checks out a merge commit while the marker names the source branch head.
+
 Model text is scrubbed before posting: `<!-- phases:review` and the tool's own hidden comment prefixes are removed, and every known secret is redacted.
 
 ### Environment

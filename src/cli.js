@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { DEFAULT_REASONING_EFFORT, MODEL_PATTERN, REASONING_EFFORTS } from "./codex.js";
-import { diffPosition, mergeBase, repoRoot, GitError } from "./git.js";
+import { diffPosition, mergeBase, repoRoot, resolveCommit, GitError } from "./git.js";
 import { GitLabError, createClient } from "./gitlab.js";
 import { failureBody, postReview, scrubModelText, scrubReview } from "./post.js";
 import { makeRedactor, redactingStream, secretValues } from "./redact.js";
@@ -134,6 +134,7 @@ export function parseReviewArgs(args) {
     help: false,
     base: v.base,
     head: v.head ?? "HEAD",
+    headExplicit: v.head !== undefined,
     dryRun: v["dry-run"],
     format: v.format,
     reviewer: v.reviewer,
@@ -332,9 +333,16 @@ function printReview(options, review, { stdout }) {
 // review's merge base and its head. Unchanged lines need old_line as well
 // as new_line; if the local diff cannot be read, new_line alone is tried
 // and a rejection falls back to a general thread.
-function positionFor(root, review) {
+// diffRefs are the merge request's, and only passed when their head is
+// the reviewed commit; their base_sha is then the diff GitLab shows, so it
+// is used when the commit is available locally.
+function positionFor(root, review, diffRefs) {
   let from = null;
-  try { from = mergeBase(root, review.base, review.head); } catch { /* new_line only */ }
+  try {
+    from = diffRefs ? resolveCommit(root, diffRefs.base_sha) : mergeBase(root, review.base, review.head);
+  } catch {
+    try { from = mergeBase(root, review.base, review.head); } catch { /* new_line only */ }
+  }
   return (finding) => {
     const pos = { new_path: finding.path, old_path: finding.path, new_line: finding.start_line };
     if (from === null) return pos;
@@ -380,11 +388,27 @@ async function runAndPost(options, { stdout, stderr, env, cwd, signal, secrets, 
     return EXIT_FAILURE;
   }
   const review = outcome.review;
-  if (review.head !== shaInfo.sha) {
+  const short = (sha) => sha.slice(0, 10);
+  // An explicit --head that is not the pipeline's commit: the marker would
+  // name a commit that was not reviewed, so none is posted. Without --head
+  // a mismatch is expected in a merged-results pipeline (HEAD is the merge
+  // commit, the marker names the source branch head), so it only warns.
+  const withholdMarker = options.headExplicit && review.head !== shaInfo.sha;
+  if (withholdMarker) {
+    log(`--head is ${short(review.head)} but the pipeline's commit is ${short(shaInfo.sha)} (from ${shaInfo.source}); no marker will be posted`);
+  } else if (review.head !== shaInfo.sha) {
     log(`warning: the marker names ${shaInfo.sha} (from ${shaInfo.source}) but the reviewed tree is ${review.head}`);
   }
-  const diffRefs = mr?.diff_refs?.base_sha && mr.diff_refs.start_sha && mr.diff_refs.head_sha ? mr.diff_refs : null;
-  if (!diffRefs) log("warning: the merge request has no diff_refs yet; findings are posted as general threads");
+  let diffRefs = mr?.diff_refs?.base_sha && mr.diff_refs.start_sha && mr.diff_refs.head_sha ? mr.diff_refs : null;
+  if (!diffRefs) {
+    log("warning: the merge request has no diff_refs yet; findings are posted as general threads");
+  } else if (diffRefs.head_sha !== review.head) {
+    // Lines were computed in the reviewed tree. Against another head they
+    // could land on the wrong line and still be accepted, so no position
+    // is sent at all.
+    log(`the merge request head is ${short(diffRefs.head_sha)} but the review is of ${short(review.head)}; findings are posted as general threads`);
+    diffRefs = null;
+  }
 
   try {
     await postReview(client, review, {
@@ -393,7 +417,8 @@ async function runAndPost(options, { stdout, stderr, env, cwd, signal, secrets, 
       cleanEmoji: options.cleanEmoji,
       selfId: self?.id,
       diffRefs,
-      position: positionFor(repoRoot(cwd), review),
+      position: positionFor(repoRoot(cwd), review, diffRefs),
+      markerWithheld: withholdMarker ? { reviewed: review.head, expected: shaInfo.sha } : null,
       log,
     });
   } catch (err) {
@@ -401,7 +426,8 @@ async function runAndPost(options, { stdout, stderr, env, cwd, signal, secrets, 
     log(`posting failed, and no marker was posted: ${err.message}`);
     return EXIT_FAILURE;
   }
-  return printReview(options, review, { stdout });
+  const printed = printReview(options, review, { stdout });
+  return withholdMarker ? EXIT_FAILURE : printed;
 }
 
 function isEntryPoint() {

@@ -86,15 +86,23 @@ function countLine(findings) {
 // The summary note: the phase 9 summary (heading, sentence, explanation,
 // AGENTS.md note, reviewed commit), the counts, what was not posted again,
 // and the marker on the last line.
-export function summaryBody(review, { sha, reviewer, notReposted, reopened }) {
-  const parts = [renderSummary({ ...review, head: sha }).trimEnd(), "", countLine(review.findings)];
+// markerWithheld: { reviewed, expected } when the reviewed commit is not
+// the pipeline's; the summary then names the reviewed commit and says why
+// there is no marker instead of carrying one.
+export function summaryBody(review, { sha, reviewer, notReposted, reopened, markerWithheld = null }) {
+  const shown = markerWithheld ? markerWithheld.reviewed : sha;
+  const parts = [renderSummary({ ...review, head: shown }).trimEnd(), "", countLine(review.findings)];
   if (notReposted > 0) {
     parts.push("", `${notReposted} ${notReposted === 1 ? "finding was" : "findings were"} already posted by an earlier review and ${notReposted === 1 ? "was" : "were"} not posted again.`);
   }
   if (reopened > 0) {
     parts.push("", `${reopened} resolved ${reopened === 1 ? "thread was" : "threads were"} reopened because the finding is still present.`);
   }
-  parts.push("", marker(reviewer, sha));
+  if (markerWithheld) {
+    parts.push("", `No review marker was posted: the reviewed commit \`${markerWithheld.reviewed.slice(0, 10)}\` is not the pipeline's commit \`${markerWithheld.expected.slice(0, 10)}\`.`);
+  } else {
+    parts.push("", marker(reviewer, sha));
+  }
   return `${parts.join("\n")}\n`;
 }
 
@@ -130,7 +138,7 @@ export function indexThreads(discussions, selfId) {
 // Returns counts of what happened. Throws GitLabError on a failure that is
 // not a rejected position, before the summary is posted.
 export async function postReview(client, review, {
-  sha, reviewer, cleanEmoji = false, selfId, diffRefs, position, log = () => {},
+  sha, reviewer, cleanEmoji = false, selfId, diffRefs, position, markerWithheld = null, log = () => {},
 }) {
   // review has already been through scrubReview (see the CLI).
   const clean = review;
@@ -183,10 +191,10 @@ export async function postReview(client, review, {
     log(`posted a general thread for ${finding.path}`);
   }
 
-  await client.createNote(summaryBody(clean, { sha, reviewer, notReposted: result.notReposted, reopened: result.reopened }));
-  log(`posted the summary note with the marker for ${sha}`);
+  await client.createNote(summaryBody(clean, { sha, reviewer, notReposted: result.notReposted, reopened: result.reopened, markerWithheld }));
+  log(markerWithheld ? "posted the summary note without a marker" : `posted the summary note with the marker for ${sha}`);
 
-  if (cleanEmoji && clean.findings.length === 0) {
+  if (cleanEmoji && clean.findings.length === 0 && !markerWithheld) {
     try {
       await client.awardEmoji("thumbsup");
       log("added a thumbs up");

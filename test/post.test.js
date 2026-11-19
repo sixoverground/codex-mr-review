@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -545,4 +545,86 @@ test("--dry-run also validates the scrubbed review, in text format too", async (
   assert.equal(r.status, 1);
   assert.equal(r.stdout, "");
   assert.deepEqual(gitlab.state.requests, []);
+});
+
+// ---- Positions and the marker only against the reviewed commit ----
+
+// Adds a commit on top of the repository's head, as a push after the
+// review started would, and returns its sha.
+function commitOnTop(repo) {
+  const git = (...args) => execFileSync("git", ["-c", "user.name=T", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args], { cwd: repo.dir, encoding: "utf8" }).trim();
+  writeFileSync(join(repo.dir, "later.txt"), "a later push\n");
+  git("add", "-A");
+  git("commit", "-q", "-m", "Later");
+  return git("rev-parse", "HEAD");
+}
+
+function discussionPosts(gitlab) {
+  return gitlab.state.requests.filter((q) => q.method === "POST" && /\/discussions$/.test(q.path));
+}
+
+test("a newer head in diff_refs sends no position and posts general threads citing path:line", async (t) => {
+  const repo = makeRepo();
+  const newer = "d".repeat(40);
+  const { gitlab, run } = await setup({ repo, mock: { mr: { iid: 3, diff_refs: { base_sha: repo.base, start_sha: repo.base, head_sha: newer } } } });
+  t.after(() => gitlab.close());
+  const r = await run();
+  assert.equal(r.status, 0, r.stderr);
+  const posts = discussionPosts(gitlab);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].body.position, undefined, "no position against another head");
+  assert.ok(posts[0].body.body.startsWith(`\`src/stats.js:26\`\n\n${renderFinding(RECORDED_FINDING)}`));
+  assert.match(r.stderr, new RegExp(`the merge request head is ${newer.slice(0, 10)} but the review is of ${repo.head.slice(0, 10)}; findings are posted as general threads`));
+  assert.deepEqual(markers(gitlab.state.notes[0].body), [{ reviewer: "codex", sha: repo.head }]);
+});
+
+test("with diff_refs at the reviewed head, positions are still sent", async (t) => {
+  const repo = makeRepo();
+  const { gitlab, run } = await setup({ repo });
+  t.after(() => gitlab.close());
+  const r = await run();
+  assert.equal(r.status, 0, r.stderr);
+  const [post] = discussionPosts(gitlab);
+  assert.equal(post.body.position.head_sha, repo.head);
+  assert.equal(post.body.position.new_line, 26);
+  assert.doesNotMatch(r.stderr, /findings are posted as general threads/);
+});
+
+test("an explicit --head older than the pipeline's commit posts the findings, no marker, and exits 1", async (t) => {
+  const repo = makeRepo();
+  const reviewed = repo.head;
+  const pipeline = commitOnTop(repo);
+  const { gitlab, run } = await setup({ repo, mock: { mr: { iid: 3, diff_refs: { base_sha: repo.base, start_sha: repo.base, head_sha: pipeline } } } });
+  t.after(() => gitlab.close());
+  const r = await run(["--head", reviewed]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, new RegExp(`--head is ${reviewed.slice(0, 10)} but the pipeline's commit is ${pipeline.slice(0, 10)} \\(from the checked-out commit\\); no marker will be posted`));
+  assert.equal(discussionPosts(gitlab).length, 1, "the findings are still posted");
+  assert.equal(discussionPosts(gitlab)[0].body.position, undefined, "as general threads: diff_refs are at another head");
+  assert.doesNotMatch(bodies(gitlab), /phases:review/, "no marker anywhere");
+  const summary = gitlab.state.notes[0].body;
+  assert.match(summary, new RegExp(`No review marker was posted: the reviewed commit \`${reviewed.slice(0, 10)}\` is not the pipeline's commit \`${pipeline.slice(0, 10)}\``));
+  assert.match(summary, new RegExp(`\\*\\*Reviewed commit:\\*\\* \`${reviewed.slice(0, 10)}\``));
+});
+
+test("an explicit --head that is the pipeline's commit posts the marker as usual", async (t) => {
+  const repo = makeRepo();
+  const { gitlab, run } = await setup({ repo });
+  t.after(() => gitlab.close());
+  const r = await run(["--head", repo.head]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(markers(gitlab.state.notes[0].body), [{ reviewer: "codex", sha: repo.head }]);
+});
+
+test("without --head, a merged-results style mismatch still posts the marker, with only a warning", async (t) => {
+  const repo = makeRepo();
+  const source = "e".repeat(40);
+  const { gitlab, run } = await setup({ repo });
+  t.after(() => gitlab.close());
+  const r = await run([], { CI_MERGE_REQUEST_SOURCE_BRANCH_SHA: source, CI_COMMIT_SHA: repo.head });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, new RegExp(`warning: the marker names ${source} \\(from CI_MERGE_REQUEST_SOURCE_BRANCH_SHA\\) but the reviewed tree is ${repo.head}`));
+  assert.doesNotMatch(r.stderr, /no marker will be posted/);
+  assert.deepEqual(markers(gitlab.state.notes[0].body), [{ reviewer: "codex", sha: source }]);
+  assert.ok(discussionPosts(gitlab)[0].body.position, "diff_refs match the reviewed tree, so the position is sent");
 });
