@@ -1,0 +1,65 @@
+# codex-mr-review: run Codex's review mode on every merge request pipeline
+# and post the findings, a summary and the review marker to the merge request.
+#
+# Use it from a project's .gitlab-ci.yml:
+#
+#   include:
+#     - remote: https://raw.githubusercontent.com/sixoverground/codex-mr-review/v0.1.0/templates/codex-review.gitlab-ci.yml
+#
+#   codex-review:
+#     tags: [your-runner-tag]
+#
+# Then add CODEX_MR_REVIEW_TOKEN as a masked CI/CD variable. Do not mark it
+# protected unless every merge request branch is protected: a protected
+# variable is not given to pipelines on unprotected branches, and the job
+# then fails saying the token is missing.
+#
+# The runner needs codex-mr-review and a logged-in codex on its PATH. See
+# the README for installing both on a shell-executor runner.
+
+.codex-review:
+  stage: test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  # A newer push cancels a review that is still running.
+  interruptible: true
+  # One review per merge request at a time.
+  resource_group: codex-review-$CI_MERGE_REQUEST_PROJECT_ID-$CI_MERGE_REQUEST_IID
+  variables:
+    # Full history, so the merge request's diff base is in the checkout.
+    GIT_DEPTH: "0"
+    GIT_STRATEGY: fetch
+    # Override any of these in the project's CI/CD variables or in the
+    # codex-review job. Leave the model empty for Codex's default.
+    CODEX_MR_REVIEW_MODEL: ""
+    CODEX_MR_REVIEW_REASONING_EFFORT: "high"
+    CODEX_MR_REVIEW_REVIEWER: "codex"
+    CODEX_MR_REVIEW_TIMEOUT: "900"
+    CODEX_MR_REVIEW_CLEAN_EMOJI: "false"
+  script:
+    - |
+      # codex-mr-review:script-start
+      set -eu
+      set -- review \
+        --base "$CI_MERGE_REQUEST_DIFF_BASE_SHA" \
+        --reviewer "$CODEX_MR_REVIEW_REVIEWER" \
+        --reasoning-effort "$CODEX_MR_REVIEW_REASONING_EFFORT" \
+        --timeout "$CODEX_MR_REVIEW_TIMEOUT"
+      # In a merged-results pipeline HEAD is the merge commit; review the
+      # source branch head, which is what the merge request's diff shows.
+      if [ -n "${CI_MERGE_REQUEST_SOURCE_BRANCH_SHA:-}" ]; then
+        set -- "$@" --head "$CI_MERGE_REQUEST_SOURCE_BRANCH_SHA"
+      fi
+      if [ -n "${CODEX_MR_REVIEW_MODEL:-}" ]; then
+        set -- "$@" --model "$CODEX_MR_REVIEW_MODEL"
+      fi
+      if [ "${CODEX_MR_REVIEW_CLEAN_EMOJI:-false}" = "true" ]; then
+        set -- "$@" --clean-emoji
+      fi
+      codex-mr-review "$@"
+      # codex-mr-review:script-end
+
+codex-review:
+  extends: .codex-review
+  # Set the tags of the runner that has codex-mr-review and codex installed:
+  # tags: [your-runner-tag]

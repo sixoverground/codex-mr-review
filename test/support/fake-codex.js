@@ -13,11 +13,13 @@
 //   sleepMs       wait this long before printing anything
 //   stderr        text to print on stderr
 //   record        directory to write what the fake saw: env.json,
-//                 args.json, cwd.txt, agents.json and guidance.json
+//                 args.json, cwd.txt, agents.json, guidance.json, and the
+//                 checkout's git config as gitconfig.txt (the file) and
+//                 gitconfig-list.txt (`git config --list`, every scope)
 //   stubbornPid   path: start a descendant that ignores SIGTERM and does
 //                 not hold the pipes, and write its pid there
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -59,6 +61,9 @@ if (scenario.record) {
   };
   walk(cwd, "");
   writeFileSync(join(scenario.record, "guidance.json"), JSON.stringify(guidance));
+  const gitDir = spawnSync("git", ["rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).stdout.trim();
+  writeFileSync(join(scenario.record, "gitconfig.txt"), readFileSync(join(gitDir, "config"), "utf8"));
+  writeFileSync(join(scenario.record, "gitconfig-list.txt"), spawnSync("git", ["config", "--list", "--show-origin"], { encoding: "utf8" }).stdout);
 }
 
 if (scenario.stubbornPid) {

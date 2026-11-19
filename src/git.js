@@ -182,8 +182,75 @@ export function headChangedGuidance(cwd, base, head) {
   throw new GitError("git diff failed while checking AGENTS.md");
 }
 
-export function addWorktree(cwd, dir, commit) {
-  git(["worktree", "add", "--detach", "--quiet", dir, commit], cwd);
+// The review checkout is a local clone, not a `git worktree`: a worktree
+// shares the CI checkout's config, where the runner leaves the job token
+// in the remote URL, and its config cannot be changed without changing the
+// CI checkout's. A --shared clone borrows the objects (no copy) and has a
+// config of its own, which is then stripped of anything credential-like.
+export function addReviewCheckout(cwd, dir, commit) {
+  git(["clone", "--quiet", "--shared", "--no-checkout", "--", cwd, dir], cwd);
+  git(["checkout", "--quiet", "--detach", commit], dir);
+  sanitizeGitConfig(dir);
+}
+
+const USERINFO_URL = /^([a-z][a-z0-9+.-]*:\/\/)[^/@\s]*@/i;
+
+function hasCredential(text) {
+  return USERINFO_URL.test(text) || /:\/\/[^/@\s]*@/.test(text);
+}
+
+export function stripUrlCredentials(url) {
+  return url.replace(USERINFO_URL, "$1");
+}
+
+function localConfig(dir) {
+  const out = git(["config", "--local", "--null", "--list"], dir);
+  return out.split("\0").filter((e) => e !== "").map((entry) => {
+    const nl = entry.indexOf("\n");
+    return nl === -1 ? { key: entry, value: "" } : { key: entry.slice(0, nl), value: entry.slice(nl + 1) };
+  });
+}
+
+function isCredentialKey(key) {
+  const k = key.toLowerCase();
+  return k.startsWith("credential.")
+    || (k.startsWith("http.") && k.endsWith(".extraheader"))
+    || k === "http.extraheader"
+    || k.startsWith("include.")
+    || k.startsWith("includeif.");
+}
+
+// Removes credentials from a checkout's own (local) config: userinfo in
+// every remote URL and push URL, any http extra header (where CI puts an
+// Authorization header), every credential helper or credential setting,
+// include directives that could pull such settings back in, and url
+// rewrites that carry userinfo. Then checks that none is left, and throws
+// GitError if one is.
+export function sanitizeGitConfig(dir) {
+  const entries = localConfig(dir);
+  const unset = new Set();
+  const rewrite = new Map();
+  for (const { key, value } of entries) {
+    const k = key.toLowerCase();
+    if (isCredentialKey(key)) {
+      unset.add(key);
+    } else if (/^remote\..+\.(url|pushurl)$/.test(k) && hasCredential(value)) {
+      if (!rewrite.has(key)) rewrite.set(key, []);
+      rewrite.get(key).push(stripUrlCredentials(value));
+    } else if (/^url\..+\.(insteadof|pushinsteadof)$/.test(k) && (hasCredential(key) || hasCredential(value))) {
+      unset.add(key);
+    }
+  }
+  for (const key of unset) gitStatus(["config", "--local", "--unset-all", key], dir);
+  for (const [key, values] of rewrite) {
+    gitStatus(["config", "--local", "--unset-all", key], dir);
+    for (const v of values) git(["config", "--local", "--add", key, v], dir);
+  }
+  for (const { key, value } of localConfig(dir)) {
+    if (isCredentialKey(key) || hasCredential(key) || hasCredential(value)) {
+      throw new GitError(`could not remove a credential from the review checkout's git config (${key})`);
+    }
+  }
 }
 
 function lstatOrNull(path) {
@@ -259,10 +326,8 @@ export function useBaseGuidance(cwd, worktree, base, head) {
 }
 
 // Best effort: never throws, so it is safe in a finally block.
-export function removeWorktree(cwd, dir) {
-  try { gitStatus(["worktree", "remove", "--force", dir], cwd); } catch { /* fall through to rm */ }
+export function removeReviewCheckout(dir) {
   rmSync(dir, { recursive: true, force: true });
-  try { gitStatus(["worktree", "prune"], cwd); } catch { /* best effort */ }
 }
 
 // A file's text at a commit, or null when it does not exist there.

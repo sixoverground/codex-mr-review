@@ -66,10 +66,10 @@ test("review without --dry-run and without a GitLab target is a usage error nami
   assert.equal(r.stdout, "");
 });
 
-test("review without --base is a usage error", () => {
-  const r = run(["review", "--dry-run"]);
+test("review without --base is a usage error outside a merge request pipeline", () => {
+  const r = spawnSync(process.execPath, [CLI, "review", "--dry-run"], { encoding: "utf8", env: { PATH: process.env.PATH } });
   assert.equal(r.status, EXIT_USAGE);
-  assert.match(r.stderr, /--base is required/);
+  assert.match(r.stderr, /--base is required \(or set CI_MERGE_REQUEST_DIFF_BASE_SHA/);
   assert.equal(r.stdout, "");
 });
 
