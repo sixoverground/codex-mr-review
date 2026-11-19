@@ -1,41 +1,117 @@
 # codex-mr-review
 
-Run the Codex CLI's review mode in GitLab CI and post findings to merge requests.
+Run the Codex CLI's review mode in GitLab CI and post the findings to the merge request.
 
-**Status: posts to GitLab.** `review` runs Codex's review mode on a change and posts the findings, a summary and the review marker to a merge request. `review --dry-run` prints the findings instead and makes no network call. The GitLab CI template is not written yet.
+## What it does
 
-## What it is for
+GitLab has no built-in equivalent of cloud Codex reviewing a pull request on GitHub. This tool fills that gap for a GitLab project with its own runner. On every merge request pipeline it:
 
-GitLab has no built-in equivalent of cloud Codex reviewing a pull request on GitHub. This tool fills that gap for a GitLab project with its own runner:
+1. Checks out the merge request's head in a temporary directory, with every `AGENTS.md` taken from the base branch, so a merge request cannot rewrite the instructions for its own review.
+2. Runs `codex exec` in Codex's built-in review mode, in a read-only sandbox, with no custom prompt.
+3. Posts each finding as an inline, resolvable thread on the line, laid out the way cloud Codex lays out a finding: a P0 to P3 badge and a title, then the body.
+4. Posts a summary note ending with a machine-readable review marker that names the reviewer and the exact commit reviewed, after every completed review, clean or not.
 
-- It runs `codex exec` in its built-in review mode, in a read-only sandbox, against the diff of a merge request.
-- It posts each finding as an inline, resolvable discussion on the merge request, laid out the way cloud Codex lays out a finding: a P0 to P3 priority, a title, then a body.
-- After every completed review, clean or not, it posts a summary note carrying a machine-readable marker that names the reviewer and the exact commit reviewed. The format of that marker is a published contract, described in [docs/contract.md](docs/contract.md). Anything that needs to know "has this commit been reviewed?" can read it.
-- The marker is written by the tool's own code after Codex has exited successfully. It is never taken from model output, and model output is scrubbed of anything that looks like a marker before it is posted.
+It is not a GitHub reviewer (it never posts to GitHub), not a custom review prompt, and not an approval gate: a marker says a commit was reviewed, not whether the review liked it.
 
-## What it is not for
+## The contract it implements
 
-- **Not a GitHub reviewer.** On GitHub, use cloud Codex. This tool never posts to GitHub.
-- **Not a custom review prompt.** It uses Codex's own review mode. Review guidance for a project comes from that project's `AGENTS.md`, read from the base branch so a merge request cannot rewrite its own review instructions.
-- **Not an approval gate.** A marker says a commit was reviewed. It says nothing about whether the review liked it.
-- **Not a sandbox for untrusted code on a shared machine.** The read-only sandbox blocks writes and network but can read whatever the runner's user can read. See [SECURITY.md](SECURITY.md).
+The marker and the inline threads follow version 1 of the review contract, pinned at
+https://github.com/sixoverground/claude-phases/blob/5c8875d10d58a6aebaf421d4d999388533195aa6/docs/review-contract.md
+(see [docs/contract.md](docs/contract.md)). In short: findings are inline resolvable threads, and every completed review leaves a top-level note with
 
-## Usage
+```
+<!-- phases:review v=1 reviewer=<name> sha=<40 character sha> -->
+```
+
+on its own line, written by the tool's code, never by the model, and only after the review succeeded. Anything that needs to know whether a commit was reviewed can read it, and should accept it only from the account the tool posts as.
+
+## Install
+
+On the machine that runs the review (the runner), with Node 20 or later and git:
+
+```
+npm install -g github:sixoverground/codex-mr-review#v0.1.0
+codex-mr-review --version
+```
+
+This installs straight from the release tag on GitHub, so no npm registry account is needed. The equivalent long form is `npm install -g git+https://github.com/sixoverground/codex-mr-review.git#v0.1.0`. There are no runtime dependencies and no build step.
+
+The runner also needs the Codex CLI (tested with codex-cli 0.147.x), logged in. See "Codex on the runner" below.
+
+## Add it to a project
+
+In the project's `.gitlab-ci.yml`:
+
+```yaml
+include:
+  - remote: https://raw.githubusercontent.com/sixoverground/codex-mr-review/v0.1.0/templates/codex-review.gitlab-ci.yml
+
+codex-review:
+  tags: [your-runner-tag]
+```
+
+Then, under **Settings > CI/CD > Variables**, add `CODEX_MR_REVIEW_TOKEN` with the token described below. Mark it **masked**. Do not mark it **protected** unless every merge request branch is protected: a protected variable is not passed to pipelines on unprotected branches, and the job then fails with "posting needs ... CODEX_MR_REVIEW_TOKEN".
+
+The template ([templates/codex-review.gitlab-ci.yml](templates/codex-review.gitlab-ci.yml)) defines a hidden job `.codex-review` and a ready job `codex-review` that extends it. The job:
+
+- runs only on merge request pipelines (`$CI_PIPELINE_SOURCE == "merge_request_event"`), in the `test` stage (override `stage:` if the project has no `test` stage);
+- fetches full history (`GIT_DEPTH: "0"`), so the merge request's diff base is in the checkout;
+- is `interruptible: true`, so a newer push cancels a running review, and has a `resource_group` per merge request, so two reviews of one merge request never run at once;
+- leaves runner `tags` for the project to set;
+- reviews from `$CI_MERGE_REQUEST_DIFF_BASE_SHA`, and in a merged-results pipeline passes `--head "$CI_MERGE_REQUEST_SOURCE_BRANCH_SHA"`, so the reviewed tree is the one the merge request's diff shows rather than the merge commit.
+
+Variables the job reads, each overridable in the project's CI/CD variables or in the `codex-review` job:
+
+| Variable | Default | Passed as |
+|---|---|---|
+| `CODEX_MR_REVIEW_TOKEN` | none (required) | the GitLab token, environment only |
+| `CODEX_MR_REVIEW_MODEL` | empty (Codex's default) | `--model` |
+| `CODEX_MR_REVIEW_REASONING_EFFORT` | `high` | `--reasoning-effort` |
+| `CODEX_MR_REVIEW_REVIEWER` | `codex` | `--reviewer`, the name in the marker |
+| `CODEX_MR_REVIEW_TIMEOUT` | `900` | `--timeout`, in seconds |
+| `CODEX_MR_REVIEW_CLEAN_EMOJI` | `false` | `--clean-emoji` when `true` |
+
+## The token and the role it needs
+
+`CODEX_MR_REVIEW_TOKEN` is a GitLab access token with the `api` scope, for an account with at least the **Developer** role on the project. Posting notes and threads needs less, but reopening a resolved thread needs Developer (or authorship of the merge request). Use a project access token or a dedicated bot user, not a person's token: consumers of the marker pin it to the account that posts it, and `GITLAB_TOKEN` is deliberately not used as a fallback for the same reason.
+
+The token is sent only in the `PRIVATE-TOKEN` header of the tool's own requests to GitLab. It never reaches Codex, and it is redacted from everything the tool prints or posts.
+
+## A shell-executor runner on macOS
+
+The review needs a machine with Codex logged in, which usually means a Mac and a [shell-executor runner](https://docs.gitlab.com/runner/install/osx/). Because the read-only sandbox can still read anything the runner's user can (see [SECURITY.md](SECURITY.md)), run it as a dedicated user:
+
+1. Create a standard (non-admin) macOS user for the runner, for example `gitlab-runner`, with nothing else in its home.
+2. As that user, install Node 20 or later, git and the Codex CLI, then install this tool with the command above. Check that `node`, `codex` and `codex-mr-review` are on that user's `PATH` in a non-interactive shell (`bash -lc 'command -v codex codex-mr-review'`), since the shell executor runs a login shell.
+3. As that user, log in to Codex (below) and install and register `gitlab-runner` with the `shell` executor and a tag, following GitLab's macOS runner instructions. On macOS the runner runs as a LaunchAgent, so that user must stay logged in.
+4. Put the tag in the project's `codex-review` job.
+
+## Codex on the runner
+
+Codex authenticates as the runner user, in that user's `CODEX_HOME` (default `~/.codex`):
+
+- **ChatGPT login:** run `codex login` once as the runner user. Reviews then draw on that account's Codex usage, and hitting its rate limit makes the job fail like any other failed review: red, with a failure note and no marker.
+- **API key:** set `CODEX_API_KEY` (or `OPENAI_API_KEY`) in the runner's environment or as a masked CI/CD variable. The tool passes these two to Codex and redacts them from its output.
+
+The tool runs Codex with `--ignore-user-config`, so the runner user's `config.toml` (model, MCP servers, profiles) never affects a review. Codex does still read a global `AGENTS.md` or `AGENTS.override.md` in its home; keep those empty for the runner user. The tool warns when one has content.
+
+## Command line
 
 ```
 codex-mr-review --help
 codex-mr-review --version
-codex-mr-review review --base <ref> [--head <ref>] [--dry-run] [--format text|json]
+codex-mr-review review [--base <ref>] [--head <ref>] [--dry-run] [--format text|json]
                        [--reviewer <name>] [--clean-emoji] [--timeout <seconds>]
                        [--model <name>] [--reasoning-effort <level>]
                        [--gitlab-url <url>] [--project <id|path>] [--mr <iid>]
 ```
 
-`--dry-run` prints the findings locally and posts nothing. `--base` is required. Run it from inside the repository; it reviews `--head` (default `HEAD`) against `--base` in a temporary worktree, with every `AGENTS.md` and `AGENTS.override.md` (at any depth) taken from `--base`, and removes the worktree afterwards.
+Run it from inside the repository. It reviews `--head` against `--base`:
 
-- `--format text` prints each finding under its location, laid out like a cloud Codex comment, then one summary. `--format json` prints one object valid against [schema/review-output.schema.json](schema/review-output.schema.json). See [docs/output-format.md](docs/output-format.md).
-- Exit status 0 means the review completed, with or without findings. Any failure (Codex exits non-zero, times out, or returns something that does not parse, including a priority outside P0 to P3) exits 1 and prints no findings.
-- It needs the `codex` CLI on `PATH`, logged in or with `CODEX_API_KEY` or `OPENAI_API_KEY` set. It is tested with codex-cli 0.147.x and warns on any other version. What that version prints is recorded in [docs/codex-output.md](docs/codex-output.md).
+- `--base` is required, except in a merge request pipeline, where it defaults to `$CI_MERGE_REQUEST_DIFF_BASE_SHA`.
+- `--head` defaults to `$CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` when GitLab sets it (merged-results pipelines only), and to `HEAD` otherwise.
+- `--dry-run` prints the findings locally and makes no network call. `--format text` prints each finding under its location, then the summary. `--format json` prints one object valid against [schema/review-output.schema.json](schema/review-output.schema.json). See [docs/output-format.md](docs/output-format.md).
+- Exit status 0 means the review completed and was posted (or printed), with or without findings. 1 means a failure: Codex failed, timed out or returned something that does not parse, GitLab refused a request, or the marker was withheld. 2 means a usage error, such as a missing token, before anything runs.
 
 ### Model and reasoning effort
 
@@ -48,7 +124,7 @@ The effort defaults to `high`, not Codex's built-in default. In a side-by-side c
 
 The tool prints the model and effort it asked for on stderr (`reviewing with model Codex's default, reasoning effort high`), and `--format json` includes them as `model` (or `null`) and `reasoning_effort`. Codex does not report which model it used, so an unset `--model` is reported as Codex's default rather than a name. Details are in [docs/codex-output.md](docs/codex-output.md).
 
-### Posting to a merge request
+### What it posts
 
 Without `--dry-run`, the tool posts. It needs four things, each from a flag or else from GitLab CI's own variables:
 
@@ -70,7 +146,7 @@ What it posts, in this order (layouts in [docs/output-format.md](docs/output-for
 
 The marker's sha is the pipeline's: `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` when set (the branch head in a merged-results pipeline), else `CI_COMMIT_SHA`, else the commit checked out where the tool runs. It is never read from model output. The marker is posted only after Codex exited successfully and every finding was posted. A failed review posts a short failure note with no marker and exits 1.
 
-Positions are sent only when the merge request's `diff_refs.head_sha` is the reviewed commit. If the merge request has moved on, findings are posted as general threads citing `path:line`, since a line number from one tree can land on the wrong line of another. If `--head` is passed and is not the pipeline's commit, the findings are still posted but the marker is withheld, the summary says why, and the tool exits 1. Without `--head` a mismatch only warns, because a merged-results pipeline checks out a merge commit while the marker names the source branch head.
+Positions are sent only when the merge request's `diff_refs.head_sha` is the reviewed commit. If the merge request has moved on, findings are posted as general threads citing `path:line`, since a line number from one tree can land on the wrong line of another. If `--head` is passed and is not the pipeline's commit, the findings are still posted but the marker is withheld, the summary says why, and the tool exits 1. Without an explicit `--head` a mismatch only warns: the marker always names the pipeline's commit, and in a merged-results pipeline the head already defaults to the source branch head, so the two agree.
 
 Model text is scrubbed before posting: `<!-- phases:review` and the tool's own hidden comment prefixes are removed, and every known secret is redacted.
 
@@ -82,7 +158,23 @@ Codex runs with an allowlisted environment (`src/env.js`): `PATH`, `HOME`, local
 
 The values of those three tokens and of `OPENAI_API_KEY` and `CODEX_API_KEY` are replaced with `[redacted]` in everything the tool prints. See [SECURITY.md](SECURITY.md).
 
-Install instructions and the GitLab CI template will follow.
+## Running a reviewer other than Codex
+
+The marker contract is not specific to Codex. Any reviewer can share this job's setup (merge request pipelines only, full history, one review per merge request, interruptible) by replacing the script and emitting the contract itself: post each finding as an inline, resolvable thread on the merge request, then, only after the review succeeded, post a top-level note whose last line is `<!-- phases:review v=1 reviewer=<name> sha=<sha> -->` with its own reviewer name and the full sha of the commit it reviewed. For example:
+
+```yaml
+include:
+  - remote: https://raw.githubusercontent.com/sixoverground/codex-mr-review/v0.1.0/templates/codex-review.gitlab-ci.yml
+
+other-review:
+  extends: .codex-review
+  tags: [your-runner-tag]
+  resource_group: other-review-$CI_MERGE_REQUEST_PROJECT_ID-$CI_MERGE_REQUEST_IID
+  script:
+    - my-reviewer --base "$CI_MERGE_REQUEST_DIFF_BASE_SHA" --reviewer my-reviewer
+```
+
+Give it its own reviewer name and resource group, and the same rules this tool follows apply to it: the sha comes from the pipeline, never from model output; model text is scrubbed of `<!-- phases:review` before posting; and a failed review posts no marker.
 
 ## Development
 
@@ -93,6 +185,8 @@ npm ci
 npm test
 npm run lint
 ```
+
+Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

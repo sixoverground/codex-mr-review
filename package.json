@@ -1,6 +1,6 @@
 {
   "name": "codex-mr-review",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Run the Codex CLI's review mode in GitLab CI and post findings to merge requests",
   "license": "MIT",
   "author": "Six Overground",
@@ -16,9 +16,11 @@
     "src",
     "docs",
     "schema",
+    "templates",
     "LICENSE",
     "README.md",
-    "SECURITY.md"
+    "SECURITY.md",
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=20"

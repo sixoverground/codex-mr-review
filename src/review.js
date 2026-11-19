@@ -1,4 +1,5 @@
-// The review runner: a temporary worktree of the head commit with the base
+// The review runner: a temporary checkout of the head commit (a local
+// clone with its own, credential-free git config) with the base
 // commit's guidance files (every AGENTS.md and AGENTS.override.md), one
 // `codex exec review` in it, and the findings it returned. Nothing here
 // touches the network itself.
@@ -17,7 +18,7 @@ import {
 } from "./codex.js";
 import { FindingError, normaliseFinding } from "./findings.js";
 import {
-  GitError, addWorktree, headChangedGuidance, readAtCommit, removeWorktree, repoRoot, resolveCommit, useBaseGuidance,
+  GitError, addReviewCheckout, headChangedGuidance, readAtCommit, removeReviewCheckout, repoRoot, resolveCommit, useBaseGuidance,
 } from "./git.js";
 
 const STDERR_TAIL_LINES = 20;
@@ -25,6 +26,21 @@ const STDERR_TAIL_LINES = 20;
 function tail(text, lines = STDERR_TAIL_LINES) {
   const all = text.trimEnd().split("\n");
   return all.slice(-lines).join("\n");
+}
+
+// The global guidance file Codex reads from its home, if it holds any
+// text. Codex loads it even with --ignore-user-config (checked against
+// codex-cli 0.147.0; see SECURITY.md). Codex uses the first non-empty of
+// AGENTS.override.md and AGENTS.md.
+export function globalGuidance(childEnv) {
+  const home = childEnv.CODEX_HOME || (childEnv.HOME ? join(childEnv.HOME, ".codex") : null);
+  if (!home) return null;
+  for (const name of ["AGENTS.override.md", "AGENTS.md"]) {
+    const path = join(home, name);
+    const text = readOrNull(path);
+    if (text !== null && text.trim() !== "") return path;
+  }
+  return null;
 }
 
 function readOrNull(path) {
@@ -66,6 +82,10 @@ export async function runReview({
     if (err instanceof GitError || err instanceof CodexOutputError) return { ok: false, error: err.message };
     throw err;
   }
+  const global = globalGuidance(childEnv);
+  if (global) {
+    warn(`Codex will also read the runner's global guidance in ${global}, which is not from the merge request but changes the review. Empty it, or give the runner its own CODEX_HOME.`);
+  }
   if (!isTestedVersion(version)) {
     warn(`Codex CLI ${version} has not been tested with this tool (tested: ${TESTED_CODEX.label}). Its output may not parse.`);
   }
@@ -74,7 +94,7 @@ export async function runReview({
   const worktree = join(scratch, "worktree");
   const lastMessagePath = join(scratch, "last-message.txt");
   try {
-    addWorktree(root, worktree, headSha);
+    addReviewCheckout(root, worktree, headSha);
     useBaseGuidance(root, worktree, baseSha, headSha);
 
     const raw = await runCodex({
@@ -139,7 +159,7 @@ export async function runReview({
     }
     throw err;
   } finally {
-    removeWorktree(root, worktree);
+    removeReviewCheckout(worktree);
     rmSync(scratch, { recursive: true, force: true });
   }
 }

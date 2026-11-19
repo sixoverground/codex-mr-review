@@ -12,7 +12,10 @@ import { fileURLToPath } from "node:url";
 import { readOutputSchema } from "../src/cli.js";
 import { ExecError, runSync } from "../src/exec.js";
 import { fingerprint } from "../src/findings.js";
-import { headChangedGuidance, resolveInTree } from "../src/git.js";
+import { headChangedGuidance, resolveInTree, sanitizeGitConfig, stripUrlCredentials } from "../src/git.js";
+import { globalGuidance } from "../src/review.js";
+import { applyCiDefaults } from "../src/cli.js";
+import { execFileSync } from "node:child_process";
 import { REDACTED, makeRedactor, secretValues } from "../src/redact.js";
 import { validate } from "../src/schema.js";
 import {
@@ -365,4 +368,113 @@ test("alive reads ps, and falls back to kill(pid, 0) only when ps cannot run", (
   assert.equal(alive(process.pid, { ps: () => "S+\n" }), true);
   assert.equal(alive(process.pid, { ps: () => null }), true);
   assert.equal(alive(process.pid), true);
+});
+
+// ---- Phase 11: credentials in git config, global guidance, CI defaults ----
+
+const JOB_TOKEN = "glcbt-64_jobTokenValue1234567890";
+
+function gitIn(dir, ...args) {
+  return execFileSync("git", args, { cwd: dir, encoding: "utf8" }).trim();
+}
+
+// Configures a repository the way a GitLab CI checkout can look: the job
+// token in the remote URL, an Authorization extra header, and credential
+// settings.
+function ciLikeConfig(dir) {
+  gitIn(dir, "remote", "add", "origin", `https://gitlab-ci-token:${JOB_TOKEN}@gitlab.example.com/group/project.git`);
+  gitIn(dir, "config", "remote.origin.pushurl", `https://gitlab-ci-token:${JOB_TOKEN}@gitlab.example.com/group/project.git`);
+  gitIn(dir, "config", "http.https://gitlab.example.com/.extraheader", `AUTHORIZATION: basic ${Buffer.from(`gitlab-ci-token:${JOB_TOKEN}`).toString("base64")}`);
+  gitIn(dir, "config", "credential.helper", "store");
+  gitIn(dir, "config", "credential.https://gitlab.example.com.username", "gitlab-ci-token");
+  gitIn(dir, "config", `url.https://gitlab-ci-token:${JOB_TOKEN}@gitlab.example.com/.insteadOf`, "https://gitlab.example.com/");
+}
+
+test("the reviewed checkout's git config holds no credential, and the CI checkout's is untouched", () => {
+  const repo = makeCustomRepo(STATS_REPO, { "src/x.js": "x\n" });
+  ciLikeConfig(repo.dir);
+  const before = readFileSync(join(repo.dir, ".git", "config"), "utf8");
+  const fake = makeFakeCodex();
+  const r = cli(repo, fake, ["--base", repo.base, "--dry-run"]);
+  assert.equal(r.status, 0, r.stderr);
+  const file = readFileSync(join(fake.record, "gitconfig.txt"), "utf8");
+  const list = readFileSync(join(fake.record, "gitconfig-list.txt"), "utf8");
+  const encoded = Buffer.from(`gitlab-ci-token:${JOB_TOKEN}`).toString("base64");
+  for (const [name, text] of [["the config file", file], ["git config --list", list]]) {
+    assert.ok(!text.includes(JOB_TOKEN), `token in ${name}`);
+    assert.ok(!text.includes(encoded), `encoded token in ${name}`);
+    assert.doesNotMatch(text, /gitlab-ci-token/, name);
+    assert.doesNotMatch(text, /extraheader/i, name);
+  }
+  assert.doesNotMatch(file, /credential/i);
+  assert.equal(readFileSync(join(repo.dir, ".git", "config"), "utf8"), before, "the CI checkout's config is unchanged");
+});
+
+test("sanitizeGitConfig strips userinfo, extra headers, credential settings and credentialed rewrites", () => {
+  const repo = makeCustomRepo(STATS_REPO, { "src/x.js": "x\n" });
+  ciLikeConfig(repo.dir);
+  gitIn(repo.dir, "remote", "add", "mirror", "ssh://user:pass@example.com/repo.git");
+  gitIn(repo.dir, "config", "http.extraHeader", "PRIVATE-TOKEN: x");
+  gitIn(repo.dir, "config", "include.path", "/somewhere/else");
+  gitIn(repo.dir, "remote", "add", "plain", "https://gitlab.example.com/group/project.git");
+  sanitizeGitConfig(repo.dir);
+  const config = readFileSync(join(repo.dir, ".git", "config"), "utf8");
+  assert.ok(!config.includes(JOB_TOKEN) && !config.includes("pass@"), config);
+  assert.doesNotMatch(config, /extraheader|credential|insteadof|include/i);
+  assert.equal(gitIn(repo.dir, "config", "remote.origin.url"), "https://gitlab.example.com/group/project.git");
+  assert.equal(gitIn(repo.dir, "config", "remote.origin.pushurl"), "https://gitlab.example.com/group/project.git");
+  assert.equal(gitIn(repo.dir, "config", "remote.mirror.url"), "ssh://example.com/repo.git");
+  assert.equal(gitIn(repo.dir, "config", "remote.plain.url"), "https://gitlab.example.com/group/project.git");
+});
+
+test("stripUrlCredentials removes userinfo and leaves everything else", () => {
+  assert.equal(stripUrlCredentials("https://gitlab-ci-token:abc@host/p.git"), "https://host/p.git");
+  assert.equal(stripUrlCredentials("https://host/p.git"), "https://host/p.git");
+  assert.equal(stripUrlCredentials("git@host:p.git"), "git@host:p.git");
+  assert.equal(stripUrlCredentials("/local/path"), "/local/path");
+});
+
+test("a CI_JOB_TOKEN quoted by codex is redacted from the output and the codex child never sees it", () => {
+  const repo = makeCustomRepo(STATS_REPO, { "src/x.js": "x\n" });
+  const msg = `Saw ${JOB_TOKEN}.\n\nReview comment:\n\n- [P1] Job token ${JOB_TOKEN} ${"\u2014"} ${RECORDED_ROOT}/src/stats.js:3-3\n  It is ${JOB_TOKEN}.\n`;
+  const fake = makeFakeCodex({ lastMessage: writeTemp(msg), events: COMPLETED, stderr: `debug ${JOB_TOKEN}\n` });
+  for (const format of ["text", "json"]) {
+    const r = cli(repo, fake, ["--base", repo.base, "--dry-run", "--format", format], { CI_JOB_TOKEN: JOB_TOKEN });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!r.stdout.includes(JOB_TOKEN) && !r.stderr.includes(JOB_TOKEN), format);
+    assert.match(r.stdout, /\[redacted\]/);
+  }
+  assert.ok(!JSON.stringify(recorded(fake, "env.json")).includes(JOB_TOKEN));
+});
+
+test("non-empty global guidance in the runner's Codex home is reported", () => {
+  const home = tempDir("cmr-codex-home-");
+  assert.equal(globalGuidance({ CODEX_HOME: home }), null);
+  writeFileSync(join(home, "AGENTS.md"), "   \n");
+  assert.equal(globalGuidance({ CODEX_HOME: home }), null, "whitespace only is empty");
+  writeFileSync(join(home, "AGENTS.md"), "Be terse.\n");
+  assert.equal(globalGuidance({ CODEX_HOME: home }), join(home, "AGENTS.md"));
+  writeFileSync(join(home, "AGENTS.override.md"), "Override.\n");
+  assert.equal(globalGuidance({ CODEX_HOME: home }), join(home, "AGENTS.override.md"));
+  const user = tempDir("cmr-home-");
+  assert.equal(globalGuidance({ HOME: user }), null);
+
+  const repo = makeCustomRepo(STATS_REPO, { "src/x.js": "x\n" });
+  const r = cli(repo, makeFakeCodex(), ["--base", repo.base, "--dry-run"], { CODEX_HOME: home });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /warning: Codex will also read the runner's global guidance in .*AGENTS\.override\.md/);
+});
+
+test("applyCiDefaults takes the base and the merged-results head from CI, and never overrides a flag", () => {
+  const sha = "1".repeat(40);
+  const env = { CI_MERGE_REQUEST_DIFF_BASE_SHA: "b".repeat(40), CI_MERGE_REQUEST_SOURCE_BRANCH_SHA: sha };
+  const fromCi = applyCiDefaults({ base: null, head: "HEAD", headExplicit: false }, env);
+  assert.equal(fromCi.base, "b".repeat(40));
+  assert.equal(fromCi.head, sha);
+  assert.equal(fromCi.headExplicit, false);
+  const flags = applyCiDefaults({ base: "main", head: "feature", headExplicit: true }, env);
+  assert.equal(flags.base, "main");
+  assert.equal(flags.head, "feature");
+  assert.equal(applyCiDefaults({ base: "main", head: "HEAD", headExplicit: false }, {}).head, "HEAD");
+  assert.throws(() => applyCiDefaults({ base: null, head: "HEAD", headExplicit: false }, {}), /--base is required/);
 });

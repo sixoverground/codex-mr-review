@@ -49,8 +49,10 @@ export function readVersion() {
 }
 
 const REVIEW_OPTIONS_HELP = `Review options:
-  --base <ref>         Base commit or branch to diff against (required)
-  --head <ref>         Head commit to review (default: HEAD)
+  --base <ref>         Base commit or branch to diff against (required;
+                       default in CI: $CI_MERGE_REQUEST_DIFF_BASE_SHA)
+  --head <ref>         Head commit to review (default:
+                       $CI_MERGE_REQUEST_SOURCE_BRANCH_SHA when set, else HEAD)
   --dry-run            Print findings locally and post nothing
   --format <fmt>       Output format for --dry-run: text or json (default: text)
   --reviewer <name>    Reviewer name written into the marker, matching
@@ -108,9 +110,6 @@ export function parseReviewArgs(args) {
   }
   const v = parsed.values;
   if (v.help) return { help: true };
-  if (v.base === undefined || v.base === "") {
-    throw new UsageError("review: --base is required");
-  }
   if (!FORMATS.includes(v.format)) {
     throw new UsageError(`review: --format must be one of ${FORMATS.join(", ")}, got "${v.format}"`);
   }
@@ -132,7 +131,7 @@ export function parseReviewArgs(args) {
   }
   return {
     help: false,
-    base: v.base,
+    base: v.base === undefined || v.base === "" ? null : v.base,
     head: v.head ?? "HEAD",
     headExplicit: v.head !== undefined,
     dryRun: v["dry-run"],
@@ -149,6 +148,23 @@ export function parseReviewArgs(args) {
 }
 
 const SHA_RE = /^[0-9a-f]{40}$/;
+
+// Fills in --base and --head from a GitLab merge request pipeline when they
+// were not given. The base is the merge request diff's base. The head is
+// the source branch head when GitLab sets it, which it does only in a
+// merged-results pipeline, where HEAD is the merge commit: reviewing the
+// merge commit would put every line number against a tree the merge
+// request's diff_refs do not describe. A head taken from here counts as
+// not explicit, and it is the sha the marker names anyway.
+export function applyCiDefaults(options, env) {
+  const base = options.base ?? nonEmpty(env.CI_MERGE_REQUEST_DIFF_BASE_SHA);
+  if (base === null) {
+    throw new UsageError("review: --base is required (or set CI_MERGE_REQUEST_DIFF_BASE_SHA, as a merge request pipeline does)");
+  }
+  const sourceSha = nonEmpty(env.CI_MERGE_REQUEST_SOURCE_BRANCH_SHA);
+  const head = options.headExplicit ? options.head : (sourceSha ?? options.head);
+  return { ...options, base, head };
+}
 
 function nonEmpty(value) {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
@@ -253,6 +269,13 @@ async function dispatch(argv, { stdout, stderr, env, cwd, signal, secrets, fetch
     if (options.help) {
       stdout.write(REVIEW_HELP);
       return EXIT_OK;
+    }
+    try {
+      options = applyCiDefaults(options, env);
+    } catch (err) {
+      if (!(err instanceof UsageError)) throw err;
+      stderr.write(`codex-mr-review: ${err.message}\n\n${REVIEW_HELP}`);
+      return EXIT_USAGE;
     }
     if (options.dryRun) return runDryRun(options, { stdout, stderr, env, cwd, signal, secrets });
     let target;

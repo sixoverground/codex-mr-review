@@ -269,17 +269,16 @@ test("a marker string in model output is scrubbed, and the summary carries exact
   assert.deepEqual(markers(summary), [{ reviewer: "codex", sha: repo.head }]);
 });
 
-const SOURCE_SHA = "a".repeat(40);
 const COMMIT_SHA = "b".repeat(40);
 for (const [name, env, expected] of [
-  ["a merged-results pipeline uses CI_MERGE_REQUEST_SOURCE_BRANCH_SHA", { CI_MERGE_REQUEST_SOURCE_BRANCH_SHA: SOURCE_SHA, CI_COMMIT_SHA: COMMIT_SHA }, () => SOURCE_SHA],
-  ["a branch pipeline uses CI_COMMIT_SHA", { CI_COMMIT_SHA: COMMIT_SHA }, () => COMMIT_SHA],
-  ["outside CI the marker names the checked-out commit", {}, (repo) => repo.head],
+  ["a merged-results pipeline uses CI_MERGE_REQUEST_SOURCE_BRANCH_SHA", (repo) => ({ CI_MERGE_REQUEST_SOURCE_BRANCH_SHA: repo.head, CI_COMMIT_SHA: COMMIT_SHA }), (repo) => repo.head],
+  ["a branch pipeline uses CI_COMMIT_SHA", () => ({ CI_COMMIT_SHA: COMMIT_SHA }), () => COMMIT_SHA],
+  ["outside CI the marker names the checked-out commit", () => ({}), (repo) => repo.head],
 ]) {
   test(`marker sha: ${name}`, async (t) => {
     const { repo, gitlab, run } = await setup();
     t.after(() => gitlab.close());
-    const r = await run([], env);
+    const r = await run([], env(repo));
     assert.equal(r.status, 0, r.stderr);
     assert.deepEqual(markers(gitlab.state.notes[0].body), [{ reviewer: "codex", sha: expected(repo) }]);
   });
@@ -616,15 +615,44 @@ test("an explicit --head that is the pipeline's commit posts the marker as usual
   assert.deepEqual(markers(gitlab.state.notes[0].body), [{ reviewer: "codex", sha: repo.head }]);
 });
 
-test("without --head, a merged-results style mismatch still posts the marker, with only a warning", async (t) => {
+test("without --head, a marker sha that differs from the reviewed tree still posts the marker, with only a warning", async (t) => {
   const repo = makeRepo();
   const source = "e".repeat(40);
   const { gitlab, run } = await setup({ repo });
   t.after(() => gitlab.close());
-  const r = await run([], { CI_MERGE_REQUEST_SOURCE_BRANCH_SHA: source, CI_COMMIT_SHA: repo.head });
+  const r = await run([], { CI_COMMIT_SHA: source });
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stderr, new RegExp(`warning: the marker names ${source} \\(from CI_MERGE_REQUEST_SOURCE_BRANCH_SHA\\) but the reviewed tree is ${repo.head}`));
+  assert.match(r.stderr, new RegExp(`warning: the marker names ${source} \\(from CI_COMMIT_SHA\\) but the reviewed tree is ${repo.head}`));
   assert.doesNotMatch(r.stderr, /no marker will be posted/);
   assert.deepEqual(markers(gitlab.state.notes[0].body), [{ reviewer: "codex", sha: source }]);
   assert.ok(discussionPosts(gitlab)[0].body.position, "diff_refs match the reviewed tree, so the position is sent");
+});
+
+test("in a merged-results pipeline the source branch head is reviewed, so positions match diff_refs", async (t) => {
+  const repo = makeRepo();
+  // Check out a merge commit, as a merged-results pipeline does: the target
+  // gains a commit, and the pipeline's HEAD merges the source into it.
+  const git = (...args) => execFileSync("git", ["-c", "user.name=T", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args], { cwd: repo.dir, encoding: "utf8" }).trim();
+  git("checkout", "-q", "main");
+  writeFileSync(join(repo.dir, "target.txt"), "a commit on the target\n");
+  git("add", "-A");
+  git("commit", "-q", "-m", "Target moves");
+  git("merge", "-q", "--no-ff", "-m", "Merged result", "feature");
+  const mergeCommit = git("rev-parse", "HEAD");
+  const { gitlab, fake } = await setup({ repo });
+  t.after(() => gitlab.close());
+  const r = await runCli(["--gitlab-url", gitlab.url, "--project", "group/scratch", "--mr", "3"], {
+    cwd: repo.dir,
+    env: {
+      PATH: `${fake.dir}:${process.env.PATH}`, HOME: process.env.HOME, TMPDIR: tempDir(), CODEX_MR_REVIEW_TOKEN: MOCK_TOKEN,
+      CI_MERGE_REQUEST_SOURCE_BRANCH_SHA: repo.head, CI_MERGE_REQUEST_DIFF_BASE_SHA: repo.base, CI_COMMIT_SHA: mergeCommit,
+    },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const args = JSON.parse(readFileSync(join(fake.record, "args.json"), "utf8"));
+  assert.equal(args.at(-1), repo.base, "the base came from CI_MERGE_REQUEST_DIFF_BASE_SHA");
+  const [post] = discussionPosts(gitlab);
+  assert.equal(post.body.position.head_sha, repo.head, "an inline position, not a general thread");
+  assert.doesNotMatch(r.stderr, /general threads|warning: the marker names/);
+  assert.deepEqual(markers(gitlab.state.notes[0].body), [{ reviewer: "codex", sha: repo.head }]);
 });

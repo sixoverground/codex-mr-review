@@ -9,6 +9,7 @@ const nodeGlobals = {
   clearTimeout: "readonly",
   AbortController: "readonly",
   AbortSignal: "readonly",
+  Buffer: "readonly",
 };
 
 export default [
