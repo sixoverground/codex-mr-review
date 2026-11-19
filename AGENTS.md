@@ -4,7 +4,7 @@ This file is read by the AI reviewer on every change to this repo. It says what 
 
 ## What this repo is
 
-A small Node command line tool, with no runtime dependencies, that runs the Codex CLI's review mode on a GitLab merge request and posts the findings back, followed by a summary note carrying a machine-readable review marker. The marker format is a contract other tools depend on; see `docs/contract.md`.
+A small Node command line tool, with no runtime dependencies, that runs the Codex CLI's review mode on a GitLab merge request and posts the findings back, followed by a summary note carrying a machine-readable review marker. Every note it posts carries a reviewer stamp. The marker and stamp formats are a contract other tools depend on; see `docs/contract.md`.
 
 ## Priority labels
 
@@ -20,12 +20,13 @@ Do not report style that the linter already enforces.
 ## What matters most here
 
 - **Tokens never leak.** The GitLab token, `CI_JOB_TOKEN`, and any value the tool knows to be secret must never appear in a log line, an error message, a posted comment, a test fixture, or the environment passed to the `codex` child process. Flag any code path that could print or forward one.
-- **Model output never writes the marker.** The marker `<!-- phases:review v=1 ... -->` is written only by the tool's own code, only after `codex` exited successfully and the findings were posted, with a sha from the CI environment or the checkout. Model text must be scrubbed of the marker prefix before posting. Any change that weakens one of these is P0.
+- **Model output never writes the marker or a stamp.** The marker `<!-- phases:review v=1 ... -->` is written only by the tool's own code, only after `codex` exited successfully and the findings were posted, with a sha from the CI environment or the checkout. The reviewer stamp `<!-- phases:reviewer v=1 reviewer=<name> -->` is written by the tool on every note, from `--reviewer`. Model text must be scrubbed of the contract's reserved prefix `<!-- phases:` before posting. Any change that weakens one of these is P0.
+- **A consumer-stamped note is never the tool's own.** A note carrying `<!-- phases:driver v=1 -->` must never count as one of the tool's threads or reopen replies, even when the tool's own account posted it. A change that lets one hide a finding or stop a reopen is P1.
 - **Failures are loud.** A failed, timed out or unparseable review must exit non-zero, post no marker, and print no findings. Treat a path that turns a failure into a clean pass as P0 or P1.
 - **The base branch's `AGENTS.md` governs a review.** The change under review must not be able to replace the instructions for its own review.
 - **No runtime dependencies** without a stated reason. Dev dependencies are fine.
 - **No network calls in tests.** Tests use a fake `codex` executable and a local HTTP server.
-- **Contract fidelity.** Marker fields are exact: `v=1`, a reviewer name matching `[a-z0-9-]+`, and a full 40 character lowercase sha.
+- **Contract fidelity.** Marker fields are exact: `v=1`, a reviewer name matching `[a-z0-9-]+`, and a full 40 character lowercase sha. The stamp's fields are exact too: `v=1`, then the same reviewer name. Exactly one stamp per note, on a line of its own, and in the summary on the line before the marker, which stays last.
 
 ## Out of scope
 

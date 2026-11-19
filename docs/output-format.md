@@ -1,6 +1,6 @@
 # Output format
 
-A finding from this tool is laid out the way cloud Codex lays out a finding on a GitHub pull request, so anything already written to read a Codex review (a person, or claude-phases' `phase-driver`) reads this one the same way.
+A finding from this tool is laid out the way cloud Codex lays out a finding on a GitHub pull request, so anything already written to read a Codex review (a person, or a tool that drives the change) reads this one the same way.
 
 ## The reference
 
@@ -75,18 +75,31 @@ With no findings the second paragraph reads "Codex found no issues in this chang
 
 ## On a GitLab merge request
 
-Without `--dry-run`:
+Without `--dry-run`, every note the tool posts ends with hidden lines (HTML comments, which GitLab does not render) written by the tool's own code, never by the model. Each kind of note, with its hidden lines in order:
 
-- **A finding** is an inline thread whose body is the rendering above, unchanged, followed by a hidden `<!-- codex-mr-review:fingerprint <64 hex> -->` line used to recognise it on a later run. The thread is anchored with a text position: `base_sha`, `start_sha` and `head_sha` from the merge request's `diff_refs`, `new_path`, `old_path` (the pre-rename path when the file was renamed), `new_line` (the finding's first line), and `old_line` as well when that line is unchanged context.
-- **When GitLab rejects the position** (a 400), the same body is posted as a general thread, which is still resolvable, with a first line citing the location, such as `` `src/stats.js:26` ``.
-- **A reopened thread** gets one reply, ``Still present at `<sha>`.``, with a hidden `<!-- codex-mr-review:reopened -->` so it is reopened only once.
-- **The summary note** is the summary above with the 40 character sha's first ten characters as the reviewed commit, then `**Findings:** 1 P1, 1 P3` (or `none`), a sentence each for findings not posted again and threads reopened when there are any, then a blank line and the marker:
+- **A finding** is an inline thread whose body is the rendering above, unchanged, then two hidden lines:
 
   ```
+  <!-- codex-mr-review:fingerprint <64 hex> -->
+  <!-- phases:reviewer v=1 reviewer=<name> -->
+  ```
+
+  The fingerprint recognises the finding on a later run. The second line is the reviewer stamp, which says the tool wrote the note. The thread is anchored with a text position: `base_sha`, `start_sha` and `head_sha` from the merge request's `diff_refs`, `new_path`, `old_path` (the pre-rename path when the file was renamed), `new_line` (the finding's first line), and `old_line` as well when that line is unchanged context.
+- **When GitLab rejects the position** (a 400), the same body, with the same two hidden lines, is posted as a general thread, which is still resolvable, with a first line citing the location, such as `` `src/stats.js:26` ``.
+- **A reopened thread** gets one reply, ``Still present at `<sha>`.``, then two hidden lines: `<!-- codex-mr-review:reopened -->`, so it is reopened only once, and the reviewer stamp.
+- **The summary note** is the summary above with the 40 character sha's first ten characters as the reviewed commit, then `**Findings:** 1 P1, 1 P3` (or `none`), a sentence each for findings not posted again and threads reopened when there are any, then a blank line, the reviewer stamp, and the marker on the last line:
+
+  ```
+  <!-- phases:reviewer v=1 reviewer=codex -->
   <!-- phases:review v=1 reviewer=codex sha=<40 character sha> -->
   ```
 
-- **A failed review** posts only `### 💡 Codex Review` and "The review did not complete:" with the first line of the reason. No marker.
+  When the marker is withheld (an explicit `--head` that is not the pipeline's commit), the summary says why and the stamp is its last line, with no marker.
+- **A failed review** posts only `### 💡 Codex Review` and "The review did not complete:" with the first line of the reason, then a blank line and the reviewer stamp. No marker.
+
+`<name>` is `--reviewer`, `codex` by default. The stamp says who wrote a note; only the marker says a review completed.
+
+A note carrying `<!-- phases:driver v=1 -->`, the contract's reserved consumer stamp, is never the tool's own, even when it was posted from the tool's account: a thread whose first note carries it is not one of the tool's threads, and a reply carrying it is not the tool's reopen. A thread posted by 0.1.0, with a fingerprint and no stamp, is still recognised as the tool's.
 
 ## `--dry-run --format text`
 

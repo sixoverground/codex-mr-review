@@ -4,14 +4,33 @@
 //
 // The marker contract is docs/contract.md. The marker is written here,
 // from a sha the caller took from the CI environment or the checkout, and
-// only after every finding has been posted.
+// only after every finding has been posted. Every note also carries the
+// reviewer stamp, written here from --reviewer, so a reader on the same
+// account can tell this tool's notes from a person's.
 
 import { excerpt } from "./redact.js";
 import { renderFinding, renderSummary } from "./render.js";
 
-export const MARKER_PREFIX = "<!-- phases:review";
+// The contract reserves this whole prefix: the marker, the reviewer stamp
+// and the consumer stamp all start with it, and model text never may.
+export const RESERVED_PREFIX = "<!-- phases:";
+// The contract's reserved consumer stamp. A note carrying it was written
+// by something reading the merge request, never by this tool, whatever
+// account posted it.
+const CONSUMER_STAMP_PREFIX = "<!-- phases:driver";
 const FINGERPRINT_PREFIX = "<!-- codex-mr-review:fingerprint";
 const REOPENED_PREFIX = "<!-- codex-mr-review:reopened";
+// What the scrub removes, longest first. The reserved prefix alone covers
+// everything; the known longer forms go first so a forged marker or stamp
+// loses its name as well, and the result reads as it did at 0.1.0.
+const SCRUBBED_PREFIXES = Object.freeze([
+  "<!-- phases:reviewer",
+  "<!-- phases:review",
+  CONSUMER_STAMP_PREFIX,
+  RESERVED_PREFIX,
+  FINGERPRINT_PREFIX,
+  REOPENED_PREFIX,
+]);
 const FINGERPRINT_RE = /<!-- codex-mr-review:fingerprint ([0-9a-f]{64}) -->/;
 const SHA_RE = /^[0-9a-f]{40}$/;
 const REVIEWER_RE = /^[a-z0-9-]+$/;
@@ -25,15 +44,24 @@ export function marker(reviewer, sha) {
   return `<!-- phases:review v=1 reviewer=${reviewer} sha=${sha} -->`;
 }
 
-// Removes the marker prefix, and the prefixes of this tool's own hidden
-// comments, from text that came from the model. Repeats until nothing is
-// left, so a split prefix cannot reassemble itself.
+// The reviewer stamp on every note the tool posts. It says who wrote the
+// note, not that a review completed: only the marker says that.
+export function stamp(reviewer) {
+  if (!REVIEWER_RE.test(reviewer)) throw new Error(`invalid reviewer name ${reviewer}`);
+  return `<!-- phases:reviewer v=1 reviewer=${reviewer} -->`;
+}
+
+// Removes the contract's reserved prefix, which covers the marker and both
+// stamps, and the prefixes of this tool's own hidden comments, from text
+// that came from the model. Each step removes the longest prefix still
+// present and starts again, until none is left, so a split prefix cannot
+// reassemble itself. Every step makes the text shorter, so it ends.
 export function scrubModelText(text) {
   let out = String(text);
   for (;;) {
-    const next = [MARKER_PREFIX, FINGERPRINT_PREFIX, REOPENED_PREFIX].reduce((s, p) => s.split(p).join(""), out);
-    if (next === out) return out;
-    out = next;
+    const found = SCRUBBED_PREFIXES.find((p) => out.includes(p));
+    if (found === undefined) return out;
+    out = out.split(found).join("");
   }
 }
 
@@ -55,22 +83,22 @@ function fingerprintComment(fp) {
 }
 
 // The inline thread body: the phase 9 rendering, then the hidden
-// fingerprint.
-export function inlineBody(finding) {
-  return `${renderFinding(finding)}\n${fingerprintComment(finding.fingerprint)}\n`;
+// fingerprint, then the reviewer stamp.
+export function inlineBody(finding, reviewer) {
+  return `${renderFinding(finding)}\n${fingerprintComment(finding.fingerprint)}\n${stamp(reviewer)}\n`;
 }
 
 // The general thread used when GitLab rejects the position: the same
 // rendering under a citation of the location, so it is still findable.
-export function fallbackBody(finding) {
+export function fallbackBody(finding, reviewer) {
   const where = finding.start_line === null
     ? finding.path
     : `${finding.path}:${finding.start_line === finding.end_line ? finding.start_line : `${finding.start_line}-${finding.end_line}`}`;
-  return `\`${where}\`\n\n${inlineBody(finding)}`;
+  return `\`${where}\`\n\n${inlineBody(finding, reviewer)}`;
 }
 
-export function reopenBody(sha) {
-  return `Still present at \`${sha}\`.\n\n<!-- codex-mr-review:reopened -->\n`;
+export function reopenBody(sha, reviewer) {
+  return `Still present at \`${sha}\`.\n\n<!-- codex-mr-review:reopened -->\n${stamp(reviewer)}\n`;
 }
 
 const PRIORITY_ORDER = ["P0", "P1", "P2", "P3"];
@@ -85,10 +113,10 @@ function countLine(findings) {
 
 // The summary note: the phase 9 summary (heading, sentence, explanation,
 // AGENTS.md note, reviewed commit), the counts, what was not posted again,
-// and the marker on the last line.
+// then the reviewer stamp and the marker on the last two lines.
 // markerWithheld: { reviewed, expected } when the reviewed commit is not
 // the pipeline's; the summary then names the reviewed commit and says why
-// there is no marker instead of carrying one.
+// there is no marker instead of carrying one, and the stamp is last.
 export function summaryBody(review, { sha, reviewer, notReposted, reopened, markerWithheld = null }) {
   const shown = markerWithheld ? markerWithheld.reviewed : sha;
   const parts = [renderSummary({ ...review, head: shown }).trimEnd(), "", countLine(review.findings)];
@@ -99,35 +127,45 @@ export function summaryBody(review, { sha, reviewer, notReposted, reopened, mark
     parts.push("", `${reopened} resolved ${reopened === 1 ? "thread was" : "threads were"} reopened because the finding is still present.`);
   }
   if (markerWithheld) {
-    parts.push("", `No review marker was posted: the reviewed commit \`${markerWithheld.reviewed.slice(0, 10)}\` is not the pipeline's commit \`${markerWithheld.expected.slice(0, 10)}\`.`);
+    parts.push("", `No review marker was posted: the reviewed commit \`${markerWithheld.reviewed.slice(0, 10)}\` is not the pipeline's commit \`${markerWithheld.expected.slice(0, 10)}\`.`, "", stamp(reviewer));
   } else {
-    parts.push("", marker(reviewer, sha));
+    parts.push("", stamp(reviewer), marker(reviewer, sha));
   }
   return `${parts.join("\n")}\n`;
 }
 
 // redact is the secret redactor. The whole error is scrubbed and redacted
-// before its first line is taken and cut.
-export function failureBody(error, redact = (s) => s) {
+// before its first line is taken and cut. The note carries the reviewer
+// stamp and never a marker.
+export function failureBody(error, { reviewer, redact = (s) => s }) {
   const first = excerpt(error, { clean: (s) => redact(scrubModelText(s)), limit: 300, firstLine: true });
-  return `### \u{1F4A1} Codex Review\n\nThe review did not complete: ${first}\n`;
+  return `### \u{1F4A1} Codex Review\n\nThe review did not complete: ${first}\n\n${stamp(reviewer)}\n`;
+}
+
+function hasConsumerStamp(note) {
+  return (note?.body ?? "").includes(CONSUMER_STAMP_PREFIX);
 }
 
 // What this tool has already said about each fingerprint, read from
 // threads started by its own account. Threads anyone else started are
-// ignored, so a pasted fingerprint cannot hide a finding.
+// ignored, so a pasted fingerprint cannot hide a finding. On one account
+// the same account also posts as a person and as a consumer, so a note
+// carrying the contract's reserved consumer stamp is never the tool's: a
+// thread it starts is skipped, and a reply carrying it is not a reopen.
+// A thread posted by 0.1.0 has a fingerprint and no reviewer stamp, and is
+// still the tool's, so upgrading re-posts nothing.
 export function indexThreads(discussions, selfId) {
   const byFingerprint = new Map();
   for (const d of discussions) {
     const notes = d.notes ?? [];
     const first = notes[0];
-    if (!first || first.author?.id !== selfId) continue;
+    if (!first || first.author?.id !== selfId || hasConsumerStamp(first)) continue;
     const m = FINGERPRINT_RE.exec(first.body ?? "");
     if (!m || byFingerprint.has(m[1])) continue;
     byFingerprint.set(m[1], {
       id: d.id,
       resolved: first.resolved === true,
-      reopenedBefore: notes.some((n) => n.author?.id === selfId && (n.body ?? "").includes(REOPENED_PREFIX)),
+      reopenedBefore: notes.some((n) => n.author?.id === selfId && !hasConsumerStamp(n) && (n.body ?? "").includes(REOPENED_PREFIX)),
     });
   }
   return byFingerprint;
@@ -140,6 +178,9 @@ export function indexThreads(discussions, selfId) {
 export async function postReview(client, review, {
   sha, reviewer, cleanEmoji = false, selfId, diffRefs, position, markerWithheld = null, log = () => {},
 }) {
+  // The reviewer name goes into every note, so it is checked before the
+  // first request, not only when the marker is built.
+  stamp(reviewer);
   // review has already been through scrubReview (see the CLI).
   const clean = review;
   const threads = indexThreads(await client.listDiscussions(), selfId);
@@ -159,7 +200,7 @@ export async function postReview(client, review, {
         // reopens, so it is posted only once the reopen has succeeded; a
         // failed reopen leaves the thread as it was, to be retried.
         await client.setDiscussionResolved(existing.id, false);
-        await client.replyToDiscussion(existing.id, reopenBody(sha));
+        await client.replyToDiscussion(existing.id, reopenBody(sha, reviewer));
         result.reopened += 1;
         log(`reopened the thread for ${finding.path}: ${finding.title}`);
       } else {
@@ -171,7 +212,7 @@ export async function postReview(client, review, {
     const pos = diffRefs && finding.start_line !== null ? position(finding) : null;
     if (pos) {
       try {
-        await client.createDiscussion(inlineBody(finding), {
+        await client.createDiscussion(inlineBody(finding, reviewer), {
           position_type: "text",
           base_sha: diffRefs.base_sha,
           start_sha: diffRefs.start_sha,
@@ -186,7 +227,7 @@ export async function postReview(client, review, {
         log(`GitLab rejected the position for ${finding.path}:${pos.new_line} (${err.status}); posting a general thread`);
       }
     }
-    await client.createDiscussion(fallbackBody(finding));
+    await client.createDiscussion(fallbackBody(finding, reviewer));
     result.general += 1;
     log(`posted a general thread for ${finding.path}`);
   }
