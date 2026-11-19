@@ -2,6 +2,22 @@
 
 All notable changes to this project are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.2.0]
+
+The tool meets version 1.1 of the review contract, so it can post from the same account as the person or tool reading the merge request. Nothing you configured has to change.
+
+### Added
+
+- Every note the tool posts carries the reviewer stamp `<!-- phases:reviewer v=1 reviewer=<name> -->` on a line of its own, written from `--reviewer`: after the fingerprint in a finding thread (inline or the general-thread fallback), after the reopened line in a reopen reply, on the line before the marker in the summary (or last, when the marker is withheld), and in a failure note, which still carries no marker. A finding's visible rendering and the summary's visible parts are unchanged.
+- Both token arrangements are documented side by side in the README and `SECURITY.md`: your own account with a personal access token, with a warning that anyone who can change the pipeline can read it and that it reaches everything the account can, and a separate identity (a project access token or a bot user), which stays the stronger choice wherever other people can push.
+
+### Changed
+
+- Model text is scrubbed of the contract's whole reserved prefix `<!-- phases:`, which covers the marker and both stamps, and not only of the marker's prefix. It still repeats until nothing is left, so a split prefix cannot reassemble.
+- A note carrying the contract's reserved consumer stamp `<!-- phases:driver v=1 -->` never counts as the tool's own, even from the tool's account: a thread it starts does not hide a finding, and a reply carrying it does not stop a reopen. Threads posted by 0.1.0, with a fingerprint and no stamp, are still recognised, so upgrading re-posts nothing.
+- The reviewer name is checked before the first note is posted, since it now goes into every note.
+- `docs/contract.md` pins version 1.1 of the contract. The install command and the `include:` URL name `v0.2.0`.
+
 ## [0.1.0]
 
 The first release: review a GitLab merge request with Codex's own review mode and post the result.
@@ -25,4 +41,5 @@ The first release: review a GitLab merge request with Codex's own review mode an
 - Codex's whole process group is killed when it exits. GitLab redirects are never followed, so the token is never resent to another host.
 - `SECURITY.md` states what remains open: the read-only sandbox can read anything the runner's user can, so run the runner as a dedicated user.
 
+[0.2.0]: https://github.com/sixoverground/codex-mr-review/releases/tag/v0.2.0
 [0.1.0]: https://github.com/sixoverground/codex-mr-review/releases/tag/v0.1.0

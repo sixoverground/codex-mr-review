@@ -95,7 +95,7 @@ test("the README names the other project only in the link to the contract it imp
   const name = ["claude", "phases"].join("-");
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
   const lines = readme.split("\n").filter((l) => l.includes(name));
-  assert.deepEqual(lines, [`https://github.com/sixoverground/${name}/blob/5c8875d10d58a6aebaf421d4d999388533195aa6/docs/review-contract.md`]);
+  assert.deepEqual(lines, [`https://github.com/sixoverground/${name}/blob/4d44490987f75b7d0e7e068fb08d6e1cc844c1e7/docs/review-contract.md`]);
   for (const rel of ["../templates/codex-review.gitlab-ci.yml", "../CHANGELOG.md"]) {
     assert.ok(!readFileSync(new URL(rel, import.meta.url), "utf8").includes(name), rel);
   }

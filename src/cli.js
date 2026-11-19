@@ -55,8 +55,9 @@ const REVIEW_OPTIONS_HELP = `Review options:
                        $CI_MERGE_REQUEST_SOURCE_BRANCH_SHA when set, else HEAD)
   --dry-run            Print findings locally and post nothing
   --format <fmt>       Output format for --dry-run: text or json (default: text)
-  --reviewer <name>    Reviewer name written into the marker, matching
-                       [a-z0-9-]+ (default: codex)
+  --reviewer <name>    Reviewer name written into the marker and the
+                       stamp on every note, matching [a-z0-9-]+
+                       (default: codex)
   --clean-emoji        Add a thumbs up to the merge request when a review
                        has no findings
   --timeout <seconds>  Give up on the review after this many seconds
@@ -232,8 +233,9 @@ export async function main(argv, {
 } = {}) {
   // The one redaction point: everything main writes, on either stream and
   // in either format, goes through these two wrappers.
-  // Printed text is also scrubbed of the marker prefix: error messages
-  // can quote model output, and the tool never prints a marker itself.
+  // Printed text is also scrubbed of the contract's reserved prefix: error
+  // messages can quote model output, and the tool never prints a marker or
+  // a stamp itself.
   const secrets = makeRedactor(secretValues(env));
   const printable = (text) => secrets(scrubModelText(text));
   const out = redactingStream(stdout, printable);
@@ -402,7 +404,7 @@ async function runAndPost(options, { stdout, stderr, env, cwd, signal, secrets, 
   if (!outcome.ok) {
     log(`review failed: ${outcome.error}`);
     try {
-      await client.createNote(failureBody(outcome.error, secrets));
+      await client.createNote(failureBody(outcome.error, { reviewer: options.reviewer, redact: secrets }));
       log("posted a failure note, with no marker");
     } catch (err) {
       if (!(err instanceof GitLabError)) throw err;

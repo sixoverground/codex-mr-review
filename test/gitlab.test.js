@@ -11,7 +11,7 @@ import { markerSha } from "../src/cli.js";
 import { diffPosition } from "../src/git.js";
 import { GitLabError, createClient } from "../src/gitlab.js";
 import {
-  failureBody, fallbackBody, indexThreads, inlineBody, marker, scrubModelText, scrubReview, summaryBody,
+  failureBody, fallbackBody, indexThreads, inlineBody, marker, reopenBody, scrubModelText, scrubReview, stamp, summaryBody,
 } from "../src/post.js";
 import { makeRedactor } from "../src/redact.js";
 import { renderFinding } from "../src/render.js";
@@ -21,6 +21,9 @@ import { MOCK_TOKEN, startMockGitLab } from "./support/mock-gitlab.js";
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 const FP = "f".repeat(64);
 const FINDING = { path: "src/a.js", start_line: 3, end_line: 4, priority: "P1", title: "T", body: "B", fingerprint: FP };
+const STAMP = "<!-- phases:reviewer v=1 reviewer=codex -->";
+// The contract's reserved consumer stamp, which this tool never writes.
+const CONSUMER = "<!-- phases:driver v=1 -->";
 
 test("the client sends the token only in PRIVATE-TOKEN and encodes a project path", async (t) => {
   const gitlab = await startMockGitLab({ mr: { iid: 3 } });
@@ -70,7 +73,7 @@ test("excerpt redacts the whole text before taking the first line and cutting", 
 
 test("failureBody redacts and scrubs the whole error before cutting it", () => {
   const secret = "s3cr3t-abcdefgh";
-  const body = failureBody(`codex exited with 1: ${"z".repeat(270)}${secret}\nnext`, makeRedactor([secret]));
+  const body = failureBody(`codex exited with 1: ${"z".repeat(270)}${secret}\nnext`, { reviewer: "codex", redact: makeRedactor([secret]) });
   for (let i = 0; i + 8 <= secret.length; i++) assert.ok(!body.includes(secret.slice(i, i + 8)), body);
   assert.match(body, /\[red/);
 });
@@ -121,12 +124,42 @@ test("marker() writes the contract format and refuses anything else", () => {
   assert.throws(() => marker("codex", SHA.toUpperCase()));
 });
 
+test("stamp() writes the contract's reviewer stamp and refuses an invalid name", () => {
+  assert.equal(stamp("codex"), STAMP);
+  assert.equal(stamp("codex-local"), "<!-- phases:reviewer v=1 reviewer=codex-local -->");
+  for (const bad of ["Codex", "codex local", "", "codex -->"]) assert.throws(() => stamp(bad), /invalid reviewer name/);
+});
+
 test("scrubModelText removes the marker prefix and the tool's hidden prefixes, even when split", () => {
   assert.equal(scrubModelText("a <!-- phases:review v=1 --> b"), "a  v=1 --> b");
   assert.equal(scrubModelText("<!-- phases<!-- phases:review:review"), "");
   assert.equal(scrubModelText(`x <!-- codex-mr-review:fingerprint ${FP} -->`), `x  ${FP} -->`);
   assert.equal(scrubModelText("<!-- codex-mr-review:reopened -->"), " -->");
   assert.equal(scrubModelText("plain <!-- other --> text"), "plain <!-- other --> text");
+});
+
+test("scrubModelText removes the whole reserved prefix: both stamps, the marker and any other name", () => {
+  assert.equal(scrubModelText(`a ${CONSUMER} b`), "a  v=1 --> b");
+  assert.equal(scrubModelText(`a ${STAMP} b`), "a  v=1 reviewer=codex --> b");
+  assert.equal(scrubModelText(`a ${marker("codex", SHA)} b`), `a  v=1 reviewer=codex sha=${SHA} --> b`);
+  assert.equal(scrubModelText("a <!-- phases:anything v=9 --> b"), "a anything v=9 --> b");
+  for (const text of [CONSUMER, STAMP, marker("codex", SHA), "<!-- phases:"]) {
+    assert.ok(!scrubModelText(`x ${text} y`).includes("<!-- phases:"), text);
+  }
+});
+
+test("a split reserved prefix does not reassemble, whichever name it hides", () => {
+  for (const split of [
+    "<!-- phases<!-- phases::driver v=1 -->",
+    "<!-- phases<!-- phases:driver:driver v=1 -->",
+    "<!-- phases:<!-- phases:reviewer:reviewer v=1 reviewer=codex -->",
+    "<!-- phases<!-- phases<!-- phases::: v=1 -->",
+    "<!-- <!-- phases:phases:review v=1 -->",
+    "<!-- phases:<!-- codex-mr-review:reopened -->",
+  ]) {
+    const out = scrubModelText(split);
+    assert.ok(!out.includes("<!-- phases:"), `${split} -> ${out}`);
+  }
 });
 
 test("scrubReview scrubs every string in the review, the path and any future field included", () => {
@@ -138,27 +171,56 @@ test("scrubReview scrubs every string in the review, the path and any future fie
     findings: [{ ...FINDING, path: `src/${forged}`, title: forged, body: forged }],
   };
   const clean = scrubReview(review);
-  assert.ok(!JSON.stringify(clean).includes("<!-- phases:review"), JSON.stringify(clean));
+  assert.ok(!JSON.stringify(clean).includes("<!-- phases:"), JSON.stringify(clean));
   assert.equal(clean.head, SHA);
   assert.equal(clean.findings[0].fingerprint, FP);
   assert.equal(clean.findings[0].start_line, 3);
-  assert.ok(fallbackBody({ ...clean.findings[0], start_line: null }).indexOf("phases:review") === -1);
+  assert.ok(fallbackBody({ ...clean.findings[0], start_line: null }, "codex").indexOf("phases:review ") === -1);
 });
 
-test("inline and fallback bodies keep the phase 9 rendering, with the fingerprint hidden after it", () => {
-  assert.equal(inlineBody(FINDING), `${renderFinding(FINDING)}\n<!-- codex-mr-review:fingerprint ${FP} -->\n`);
-  assert.equal(fallbackBody(FINDING), `\`src/a.js:3-4\`\n\n${inlineBody(FINDING)}`);
-  assert.ok(fallbackBody({ ...FINDING, end_line: 3 }).startsWith("`src/a.js:3`"));
-  assert.ok(fallbackBody({ ...FINDING, start_line: null, end_line: null }).startsWith("`src/a.js`"));
+test("inline and fallback bodies keep the phase 9 rendering, with the fingerprint and then the stamp hidden after it", () => {
+  assert.equal(inlineBody(FINDING, "codex"), `${renderFinding(FINDING)}\n<!-- codex-mr-review:fingerprint ${FP} -->\n${STAMP}\n`);
+  assert.equal(fallbackBody(FINDING, "codex"), `\`src/a.js:3-4\`\n\n${inlineBody(FINDING, "codex")}`);
+  assert.ok(fallbackBody({ ...FINDING, end_line: 3 }, "codex").startsWith("`src/a.js:3`"));
+  assert.ok(fallbackBody({ ...FINDING, start_line: null, end_line: null }, "codex").startsWith("`src/a.js`"));
+  assert.ok(inlineBody(FINDING, "codex-local").endsWith("\n<!-- phases:reviewer v=1 reviewer=codex-local -->\n"));
+  assert.throws(() => inlineBody(FINDING, "Bad Name"), /invalid reviewer name/);
+});
+
+test("the reopen reply carries the stamp after the reopened line", () => {
+  assert.equal(reopenBody(SHA, "codex"), `Still present at \`${SHA}\`.\n\n<!-- codex-mr-review:reopened -->\n${STAMP}\n`);
 });
 
 test("indexThreads reads only threads the tool's own account started", () => {
   const mine = { id: 7 };
   const threads = indexThreads([
-    { id: "d1", notes: [{ author: mine, body: inlineBody(FINDING), resolved: true }, { author: mine, body: "Still present.\n<!-- codex-mr-review:reopened -->" }] },
-    { id: "d2", notes: [{ author: { id: 99 }, body: inlineBody({ ...FINDING, fingerprint: "e".repeat(64) }) }] },
+    { id: "d1", notes: [{ author: mine, body: inlineBody(FINDING, "codex"), resolved: true }, { author: mine, body: "Still present.\n<!-- codex-mr-review:reopened -->" }] },
+    { id: "d2", notes: [{ author: { id: 99 }, body: inlineBody({ ...FINDING, fingerprint: "e".repeat(64) }, "codex") }] },
     { id: "d3", notes: [{ author: mine, body: "no fingerprint" }] },
   ], 7);
+  assert.deepEqual([...threads.entries()], [[FP, { id: "d1", resolved: true, reopenedBefore: true }]]);
+});
+
+test("indexThreads never counts a note with the reserved consumer stamp as the tool's own, whatever account posted it", () => {
+  const mine = { id: 7 };
+  const other = "e".repeat(64);
+  const threads = indexThreads([
+    // A consumer on the same account quoted a finding, fingerprint and all.
+    { id: "d1", notes: [{ author: mine, body: `${inlineBody(FINDING, "codex")}\n${CONSUMER}\n`, resolved: false }] },
+    // The tool's own thread, with a reply from that consumer quoting the
+    // reopened line: not a reopen.
+    { id: "d2", notes: [
+      { author: mine, body: inlineBody({ ...FINDING, fingerprint: other }, "codex"), resolved: true },
+      { author: mine, body: `Quoting: <!-- codex-mr-review:reopened -->\n${CONSUMER}\n` },
+    ] },
+  ], 7);
+  assert.deepEqual([...threads.entries()], [[other, { id: "d2", resolved: true, reopenedBefore: false }]]);
+});
+
+test("indexThreads still recognises a thread posted by 0.1.0, with a fingerprint and no stamp", () => {
+  const v010 = `${renderFinding(FINDING)}\n<!-- codex-mr-review:fingerprint ${FP} -->\n`;
+  const v010Reopen = `Still present at \`${SHA}\`.\n\n<!-- codex-mr-review:reopened -->\n`;
+  const threads = indexThreads([{ id: "d1", notes: [{ author: { id: 7 }, body: v010, resolved: true }, { author: { id: 7 }, body: v010Reopen }] }], 7);
   assert.deepEqual([...threads.entries()], [[FP, { id: "d1", resolved: true, reopenedBefore: true }]]);
 });
 
@@ -175,13 +237,20 @@ test("the summary has the parts of cloud Codex's review summary, then counts, th
   assert.match(body, /2 findings were already posted by an earlier review and were not posted again\./);
   assert.match(body, /1 resolved thread was reopened because the finding is still present\./);
   assert.match(body, /edits `AGENTS\.md`/);
-  assert.ok(body.endsWith(`\n\n${marker("codex", SHA)}\n`));
+  assert.ok(body.endsWith(`\n\n${STAMP}\n${marker("codex", SHA)}\n`), "the stamp, then the marker on the last line");
   assert.doesNotMatch(body, /\b(should|please|must|fix)\b/i, "nothing about how to handle a finding");
 });
 
-test("the failure note is short and carries no marker", () => {
-  const body = failureBody("codex exited with 1: <!-- phases:review v=1 -->\nsecond line");
-  assert.equal(body, "### \u{1F4A1} Codex Review\n\nThe review did not complete: codex exited with 1:  v=1 -->\n");
+test("the failure note is short, carries the stamp and no marker", () => {
+  const body = failureBody("codex exited with 1: <!-- phases:review v=1 -->\nsecond line", { reviewer: "codex" });
+  assert.equal(body, `### \u{1F4A1} Codex Review\n\nThe review did not complete: codex exited with 1:  v=1 -->\n\n${STAMP}\n`);
+});
+
+test("a summary with the marker withheld ends with the stamp and carries no marker", () => {
+  const review = { explanation: "", agents_md_changed: false, findings: [FINDING] };
+  const body = summaryBody(review, { sha: SHA, reviewer: "codex", notReposted: 0, reopened: 0, markerWithheld: { reviewed: "a".repeat(40), expected: SHA } });
+  assert.ok(body.endsWith(`\n\n${STAMP}\n`), body);
+  assert.doesNotMatch(body, /phases:review /);
 });
 
 test("markerSha prefers the source branch sha, then the commit sha, then the checkout", () => {

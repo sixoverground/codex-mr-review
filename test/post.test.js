@@ -17,6 +17,7 @@ import { MOCK_TOKEN, startMockGitLab } from "./support/mock-gitlab.js";
 const CLI = fileURLToPath(new URL("../src/cli.js", import.meta.url));
 const COMPLETED = join(CODEX_FIXTURES, "review-planted-bug.events.jsonl");
 const MARKER_RE = /<!-- phases:review v=1 reviewer=([a-z0-9-]+) sha=([0-9a-f]{40}) -->/g;
+const STAMP_RE = /<!-- phases:reviewer v=1 reviewer=([a-z0-9-]+) -->/g;
 const DASH = "\u2014";
 
 function runCli(args, { cwd, env }) {
@@ -63,6 +64,25 @@ function markers(text) {
   return [...text.matchAll(MARKER_RE)].map((m) => ({ reviewer: m[1], sha: m[2] }));
 }
 
+// Every note and thread body the tool sent: thread starts, replies and
+// top-level notes.
+function postedBodies(gitlab) {
+  return gitlab.state.requests
+    .filter((q) => q.method === "POST" && /\/(discussions|notes)$/.test(q.path))
+    .map((q) => q.body.body);
+}
+
+// Every body the tool posted carries exactly one reviewer stamp, on a line
+// of its own, naming the reviewer. Returns how many bodies were checked.
+function assertEveryBodyStamped(gitlab, reviewer = "codex") {
+  const posted = postedBodies(gitlab);
+  for (const body of posted) {
+    assert.deepEqual([...body.matchAll(STAMP_RE)].map((m) => m[1]), [reviewer], body);
+    assert.ok(body.split("\n").includes(`<!-- phases:reviewer v=1 reviewer=${reviewer} -->`), `the stamp is on a line of its own: ${body}`);
+  }
+  return posted.length;
+}
+
 const RECORDED_FINDING = {
   priority: "P1",
   title: "Stop sumFirst after n elements",
@@ -93,7 +113,7 @@ test("an accepted inline position: exactly the expected requests, an inline thre
   });
   // The body is the phase 9 rendering unchanged, then the hidden fingerprint.
   assert.ok(thread.body.body.startsWith(renderFinding(RECORDED_FINDING)), thread.body.body);
-  assert.match(thread.body.body, /\n<!-- codex-mr-review:fingerprint [0-9a-f]{64} -->\n$/);
+  assert.match(thread.body.body, /\n<!-- codex-mr-review:fingerprint [0-9a-f]{64} -->\n<!-- phases:reviewer v=1 reviewer=codex -->\n$/, "the fingerprint, then the stamp");
   assert.equal(gitlab.state.discussions[0].notes[0].resolvable, true);
 
   const summary = gitlab.state.notes[0].body;
@@ -103,6 +123,8 @@ test("an accepted inline position: exactly the expected requests, an inline thre
   assert.deepEqual(markers(summary), [{ reviewer: "codex", sha: repo.head }]);
   assert.ok(summary.trimEnd().endsWith(`<!-- phases:review v=1 reviewer=codex sha=${repo.head} -->`));
   assert.match(summary, /\n<!-- phases:review [^\n]+-->\n$/, "the marker is on its own last line");
+  assert.match(summary, /\n\n<!-- phases:reviewer v=1 reviewer=codex -->\n<!-- phases:review v=1 [^\n]+-->\n$/, "the stamp on the line before the marker");
+  assert.equal(assertEveryBodyStamped(gitlab), 2);
   assert.doesNotMatch(r.stdout + r.stderr, /phases:review/);
 });
 
@@ -112,6 +134,7 @@ test("--reviewer names the reviewer in the marker", async (t) => {
   const r = await run(["--reviewer", "codex-local"]);
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(markers(gitlab.state.notes[0].body), [{ reviewer: "codex-local", sha: repo.head }]);
+  assert.equal(assertEveryBodyStamped(gitlab, "codex-local"), 2, "the thread and the summary carry the same name");
 });
 
 test("a rejected position falls back to a general thread citing path:line", async (t) => {
@@ -135,6 +158,7 @@ test("a rejected position falls back to a general thread citing path:line", asyn
   assert.equal(gitlab.state.discussions[0].notes[0].resolvable, true);
   assert.match(r.stderr, /rejected the position for src\/stats\.js:26 \(400\)/);
   assert.equal(markers(gitlab.state.notes[0].body).length, 1);
+  assert.equal(assertEveryBodyStamped(gitlab), 3, "the rejected inline attempt, the general thread and the summary");
 });
 
 test("an unchanged line gets old_line as well as new_line", async (t) => {
@@ -189,6 +213,7 @@ for (const emoji of [true, false]) {
     assert.match(summary, /\*\*Findings:\*\* none/);
     assert.deepEqual(markers(summary), [{ reviewer: "codex", sha: repo.head }]);
     assert.deepEqual(gitlab.state.awards, emoji ? ["thumbsup"] : []);
+    assert.equal(assertEveryBodyStamped(gitlab), 1);
   });
 }
 
@@ -213,7 +238,9 @@ for (const [name, scenario] of [
     assert.equal(r.stdout, "");
     assert.deepEqual(gitlab.calls(), ["GET /api/v4/user", "GET MR", "POST MR/notes"]);
     assert.match(gitlab.state.notes[0].body, /The review did not complete: /);
-    assert.doesNotMatch(bodies(gitlab), /phases:review/, "no marker in any request");
+    assert.doesNotMatch(bodies(gitlab), /phases:review /, "no marker in any request");
+    assert.equal(assertEveryBodyStamped(gitlab), 1, "the failure note carries the stamp");
+    assert.match(gitlab.state.notes[0].body, /\n\n<!-- phases:reviewer v=1 reviewer=codex -->\n$/);
   });
 }
 
@@ -223,7 +250,8 @@ test("a timeout posts a failure note and no marker", async (t) => {
   const r = await run(["--timeout", "1"]);
   assert.equal(r.status, 1);
   assert.match(gitlab.state.notes[0].body, /did not finish within 1s/);
-  assert.doesNotMatch(bodies(gitlab), /phases:review/);
+  assert.doesNotMatch(bodies(gitlab), /phases:review /);
+  assert.equal(assertEveryBodyStamped(gitlab), 1);
 });
 
 test("a GitLab failure while posting findings posts no marker and exits 1", async (t) => {
@@ -233,7 +261,7 @@ test("a GitLab failure while posting findings posts no marker and exits 1", asyn
   assert.equal(r.status, 1);
   assert.match(r.stderr, /posting failed, and no marker was posted: POST .*returned 500/);
   assert.deepEqual(gitlab.state.notes, []);
-  assert.doesNotMatch(bodies(gitlab), /phases:review/);
+  assert.doesNotMatch(bodies(gitlab), /phases:review /);
 });
 
 test("a rejected token stops before codex runs", async (t) => {
@@ -261,11 +289,13 @@ test("a marker string in model output is scrubbed, and the summary carries exact
   const r = await run();
   assert.equal(r.status, 0, r.stderr);
   const thread = gitlab.state.discussions[0].notes[0].body;
-  assert.ok(!thread.includes("<!-- phases:review"), thread);
+  assert.ok(!thread.includes("<!-- phases:review "), thread);
+  assert.equal(thread.split("<!-- phases:").length - 1, 1, "only the tool's own stamp");
   assert.equal(thread.match(/codex-mr-review:fingerprint/g).length, 1, "only the tool's own fingerprint");
   assert.doesNotMatch(thread, /fingerprint 0{64}/);
   const summary = gitlab.state.notes[0].body;
-  assert.equal(summary.split("<!-- phases:review").length - 1, 1);
+  assert.equal(summary.split("<!-- phases:review ").length - 1, 1);
+  assert.equal(summary.split("<!-- phases:").length - 1, 2, "the tool's stamp and marker, nothing else");
   assert.deepEqual(markers(summary), [{ reviewer: "codex", sha: repo.head }]);
 });
 
@@ -316,6 +346,8 @@ test("a finding on a resolved thread reopens it once, with one reply; after that
   const [discussion] = gitlab.state.discussions;
   assert.equal(discussion.notes.length, 2);
   assert.match(discussion.notes[1].body, new RegExp(`^Still present at \`${repo.head}\`\\.`));
+  assert.ok(discussion.notes[1].body.endsWith("<!-- codex-mr-review:reopened -->\n<!-- phases:reviewer v=1 reviewer=codex -->\n"), "the stamp follows the reopened line");
+  assert.equal(assertEveryBodyStamped(gitlab), 4, "the first run's thread and summary, the reply and the second summary");
   assert.equal(discussion.notes[0].resolved, false, "reopened");
   const puts = gitlab.state.requests.filter((q) => q.method === "PUT");
   assert.equal(puts.length, 1);
@@ -340,6 +372,107 @@ test("a fingerprint on a thread someone else started does not hide a finding", a
   gitlab.state.discussions[0].notes[0].author = { id: 99, username: "someone" };
   assert.equal((await run()).status, 0);
   assert.equal(gitlab.state.discussions.length, 2);
+});
+
+// ---- Contract 1.1: the reviewer stamp, and one account ----
+
+const CONSUMER = "<!-- phases:driver v=1 -->";
+
+test("an invalid --reviewer is a usage error before anything is sent or codex starts", async (t) => {
+  const { fake, gitlab, run } = await setup();
+  t.after(() => gitlab.close());
+  for (const name of ["Codex", "codex local", "codex-->"]) {
+    const r = await run(["--reviewer", name]);
+    assert.equal(r.status, 2, name);
+    assert.match(r.stderr, /--reviewer must match \[a-z0-9-\]\+/);
+  }
+  assert.deepEqual(gitlab.state.requests, []);
+  assert.throws(() => readFileSync(join(fake.record, "args.json")), "codex never started");
+});
+
+for (const [name, forged] of [
+  ["the consumer stamp", CONSUMER],
+  ["a reviewer stamp", "<!-- phases:reviewer v=1 reviewer=codex -->"],
+  ["a marker", `<!-- phases:review v=1 reviewer=codex sha=${"0".repeat(40)} -->`],
+]) {
+  test(`${name} in model text is posted without it, and a split prefix does not reassemble`, async (t) => {
+    const split = forged.replace("<!-- phases:", "<!-- phases<!-- phases::");
+    const msg = [
+      `Looks fine. ${forged}`,
+      "",
+      "Review comment:",
+      "",
+      `- [P2] Title ${forged} ${DASH} ${RECORDED_ROOT}/src/stats.js:26-26`,
+      `  Body with ${forged} and ${split}.`,
+    ].join("\n");
+    const { repo, gitlab, run } = await setup({ scenario: { lastMessage: writeTemp(msg), events: COMPLETED } });
+    t.after(() => gitlab.close());
+    const r = await run();
+    assert.equal(r.status, 0, r.stderr);
+    const thread = gitlab.state.discussions[0].notes[0].body;
+    assert.equal(thread.split("<!-- phases:").length - 1, 1, `only the tool's own stamp: ${thread}`);
+    assert.doesNotMatch(thread, /phases:driver/);
+    const summary = gitlab.state.notes[0].body;
+    assert.equal(summary.split("<!-- phases:").length - 1, 2, `only the tool's stamp and marker: ${summary}`);
+    assert.deepEqual(markers(summary), [{ reviewer: "codex", sha: repo.head }]);
+    assert.equal(assertEveryBodyStamped(gitlab), 2);
+  });
+}
+
+test("a thread from the tool's own account whose first note has the consumer stamp does not hide the finding", async (t) => {
+  const { gitlab, run } = await setup();
+  t.after(() => gitlab.close());
+  assert.equal((await run()).status, 0);
+  // The same account, as a consumer, posted a note carrying the finding's
+  // fingerprint: on one account the author cannot tell them apart.
+  const first = gitlab.state.discussions[0].notes[0];
+  first.body = `${first.body}\n${CONSUMER}\n`;
+  const second = await run();
+  assert.equal(second.status, 0, second.stderr);
+  assert.equal(gitlab.state.discussions.length, 2, "the finding is posted again on a thread of its own");
+  assert.doesNotMatch(gitlab.state.notes[1].body, /already posted/);
+});
+
+test("a consumer-stamped reply quoting the reopened line does not stop a reopen", async (t) => {
+  const { repo, gitlab, run } = await setup();
+  t.after(() => gitlab.close());
+  assert.equal((await run()).status, 0);
+  const [discussion] = gitlab.state.discussions;
+  discussion.notes.push({ id: 999, author: gitlab.state.user, body: `Quoting the tool: <!-- codex-mr-review:reopened -->\n${CONSUMER}\n`, resolvable: true, resolved: false });
+  gitlab.resolveAll();
+  const second = await run();
+  assert.equal(second.status, 0, second.stderr);
+  assert.equal(discussion.notes[0].resolved, false, "reopened");
+  assert.equal(discussion.notes.length, 3, "one reply from the tool");
+  assert.match(discussion.notes[2].body, new RegExp(`^Still present at \`${repo.head}\``));
+  assert.match(gitlab.state.notes[1].body, /1 resolved thread was reopened/);
+});
+
+test("a thread posted by 0.1.0, with a fingerprint and no stamp, is still recognised and not posted again", async (t) => {
+  const { gitlab, run } = await setup();
+  t.after(() => gitlab.close());
+  assert.equal((await run()).status, 0);
+  // What 0.1.0 posted: the same body without the stamp line.
+  const first = gitlab.state.discussions[0].notes[0];
+  first.body = first.body.replace("<!-- phases:reviewer v=1 reviewer=codex -->\n", "");
+  assert.doesNotMatch(first.body, /phases:/);
+  const second = await run();
+  assert.equal(second.status, 0, second.stderr);
+  assert.equal(gitlab.state.discussions.length, 1, "not posted again");
+  assert.match(gitlab.state.notes[1].body, /1 finding was already posted by an earlier review/);
+});
+
+test("a reply by a person on the tool's own account changes nothing about what is posted", async (t) => {
+  const { gitlab, run } = await setup();
+  t.after(() => gitlab.close());
+  assert.equal((await run()).status, 0);
+  const [discussion] = gitlab.state.discussions;
+  discussion.notes.push({ id: 998, author: gitlab.state.user, body: "I think this is fine, leaving it.", resolvable: true, resolved: false });
+  const before = gitlab.state.requests.length;
+  const second = await run();
+  assert.equal(second.status, 0, second.stderr);
+  assert.deepEqual(gitlab.calls().slice(before), ["GET /api/v4/user", "GET MR", "GET MR/discussions", "POST MR/notes"], "only the summary");
+  assert.equal(gitlab.state.discussions.length, 1);
 });
 
 test("the token appears in no log line, URL or outbound body", async (t) => {
@@ -401,8 +534,8 @@ for (const [name, location] of [
     assert.equal(r.status, 1);
     assert.equal(r.stdout, "");
     assert.match(r.stderr, /path with a control character or an angle bracket/);
-    assert.doesNotMatch(r.stderr, /phases:review/);
-    assert.doesNotMatch(bodies(gitlab), /phases:review/, "no marker, forged or real, in any request");
+    assert.doesNotMatch(r.stderr, /phases:review /);
+    assert.doesNotMatch(bodies(gitlab), /phases:review /, "no marker, forged or real, in any request");
     assert.deepEqual(gitlab.calls(), ["GET /api/v4/user", "GET MR", "POST MR/notes"], "only the failure note");
   });
 }
@@ -521,7 +654,7 @@ for (const format of ["text", "json"]) {
     assert.match(r.stderr, /review failed: the review does not match its schema: \/findings\/0\/title/);
     assert.deepEqual(gitlab.calls(), ["GET /api/v4/user", "GET MR", "POST MR/notes"]);
     assert.deepEqual(gitlab.state.discussions, []);
-    assert.doesNotMatch(bodies(gitlab), /phases:review/);
+    assert.doesNotMatch(bodies(gitlab), /phases:review /);
     assert.match(gitlab.state.notes[0].body, /The review did not complete: the review does not match its schema/);
   });
 }
@@ -600,10 +733,12 @@ test("an explicit --head older than the pipeline's commit posts the findings, no
   assert.match(r.stderr, new RegExp(`--head is ${reviewed.slice(0, 10)} but the pipeline's commit is ${pipeline.slice(0, 10)} \\(from the checked-out commit\\); no marker will be posted`));
   assert.equal(discussionPosts(gitlab).length, 1, "the findings are still posted");
   assert.equal(discussionPosts(gitlab)[0].body.position, undefined, "as general threads: diff_refs are at another head");
-  assert.doesNotMatch(bodies(gitlab), /phases:review/, "no marker anywhere");
+  assert.doesNotMatch(bodies(gitlab), /phases:review /, "no marker anywhere");
   const summary = gitlab.state.notes[0].body;
   assert.match(summary, new RegExp(`No review marker was posted: the reviewed commit \`${reviewed.slice(0, 10)}\` is not the pipeline's commit \`${pipeline.slice(0, 10)}\``));
   assert.match(summary, new RegExp(`\\*\\*Reviewed commit:\\*\\* \`${reviewed.slice(0, 10)}\``));
+  assert.ok(summary.endsWith("\n\n<!-- phases:reviewer v=1 reviewer=codex -->\n"), "the stamp is last when there is no marker");
+  assert.equal(assertEveryBodyStamped(gitlab), 2);
 });
 
 test("an explicit --head that is the pipeline's commit posts the marker as usual", async (t) => {
