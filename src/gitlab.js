@@ -16,6 +16,8 @@
 // resend the header to wherever the redirect points, so any 3xx is an
 // error naming only the status and the target's origin.
 
+import { excerpt } from "./redact.js";
+
 export const REQUEST_TIMEOUT_MS = 30_000;
 const PER_PAGE = 100;
 const MAX_PAGES = 100;
@@ -73,7 +75,7 @@ export function createClient({ baseUrl, token, project, mr, redact = (s) => s, f
     }
     const text = await res.text();
     if (!res.ok) {
-      const detail = redact(text.slice(0, ERROR_TEXT_LIMIT)).replace(/\s+/g, " ").trim();
+      const detail = excerpt(text, { clean: redact, limit: ERROR_TEXT_LIMIT, collapse: true });
       throw new GitLabError(`${method} ${path} returned ${res.status}${detail ? `: ${detail}` : ""}`, res.status);
     }
     let data = null;

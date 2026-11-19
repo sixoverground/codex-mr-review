@@ -3,8 +3,9 @@
 // `codex exec review` in it, and the findings it returned. Nothing here
 // touches the network itself.
 //
-// Messages returned from here may quote codex's output. They are redacted
-// where the CLI writes them (src/redact.js), not here.
+// Everything codex returns is redacted with the caller's redactor as soon
+// as it is read, so findings and error messages built from it never hold a
+// secret, whole or in part. The CLI redacts again wherever it writes.
 
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -47,6 +48,7 @@ export async function runReview({
   codexBin = "codex",
   signal,
   warn = () => {},
+  redact = (s) => s,
 }) {
   const childEnv = buildChildEnv(env);
   let root;
@@ -75,7 +77,7 @@ export async function runReview({
     addWorktree(root, worktree, headSha);
     useBaseGuidance(root, worktree, baseSha, headSha);
 
-    const run = await runCodex({
+    const raw = await runCodex({
       bin: codexBin,
       args: reviewArgs({ baseSha, lastMessagePath, model, reasoningEffort }),
       cwd: worktree,
@@ -83,6 +85,9 @@ export async function runReview({
       timeoutMs: timeoutSeconds * 1000,
       signal,
     });
+    // Redact everything codex returned, whole, before any parsing, line
+    // selection or cut, so no later step can split a secret.
+    const run = { ...raw, stdout: redact(raw.stdout), stderr: redact(raw.stderr) };
     if (run.spawnError) return { ok: false, error: `could not start ${codexBin}: ${run.spawnError.message}` };
     if (run.aborted) return { ok: false, error: "review was interrupted" };
     if (run.timedOut) return { ok: false, error: `codex did not finish within ${timeoutSeconds}s` };
@@ -100,7 +105,8 @@ export async function runReview({
     const events = parseEvents(run.stdout);
     if (events.failure) return { ok: false, error: `codex reported a failed turn: ${events.failure}` };
     if (!events.completed) return { ok: false, error: "codex exited without completing the review turn" };
-    const text = readOrNull(lastMessagePath) ?? events.lastAgentMessage;
+    const lastMessage = readOrNull(lastMessagePath);
+    const text = lastMessage === null ? events.lastAgentMessage : redact(lastMessage);
     const parsed = parseReviewText(text);
 
     const roots = [worktree];

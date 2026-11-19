@@ -54,6 +54,27 @@ test("a GitLab error carries the status and a redacted, shortened message", asyn
     && !err.message.includes(MOCK_TOKEN));
 });
 
+test("excerpt redacts the whole text before taking the first line and cutting", async () => {
+  const { excerpt } = await import("../src/redact.js");
+  const secret = "s3cr3t-abcdefgh";
+  const clean = makeRedactor([secret]);
+  const text = `${"a".repeat(295)}${secret} more\nsecond ${secret}`;
+  const out = excerpt(text, { clean, limit: 300, firstLine: true });
+  assert.ok(out.startsWith(`${"a".repeat(295)}[red`) && out.endsWith("..."), out);
+  assert.equal(out.length, 303);
+  for (let i = 0; i + 8 <= secret.length; i++) assert.ok(!out.includes(secret.slice(i, i + 8)));
+  // Collapsing whitespace cannot reassemble a secret that redaction missed.
+  const spaced = makeRedactor(["two words"]);
+  assert.equal(excerpt("two\n\nwords", { clean: spaced, limit: 100, collapse: true }), "[redacted]");
+});
+
+test("failureBody redacts and scrubs the whole error before cutting it", () => {
+  const secret = "s3cr3t-abcdefgh";
+  const body = failureBody(`codex exited with 1: ${"z".repeat(270)}${secret}\nnext`, makeRedactor([secret]));
+  for (let i = 0; i + 8 <= secret.length; i++) assert.ok(!body.includes(secret.slice(i, i + 8)), body);
+  assert.match(body, /\[red/);
+});
+
 test("every body the client sends is redacted", async (t) => {
   const gitlab = await startMockGitLab();
   t.after(() => gitlab.close());

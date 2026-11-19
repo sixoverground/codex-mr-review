@@ -253,7 +253,7 @@ async function dispatch(argv, { stdout, stderr, env, cwd, signal, secrets, fetch
       stdout.write(REVIEW_HELP);
       return EXIT_OK;
     }
-    if (options.dryRun) return runDryRun(options, { stdout, stderr, env, cwd, signal });
+    if (options.dryRun) return runDryRun(options, { stdout, stderr, env, cwd, signal, secrets });
     let target;
     let shaInfo;
     try {
@@ -271,7 +271,18 @@ async function dispatch(argv, { stdout, stderr, env, cwd, signal, secrets, fetch
   return EXIT_USAGE;
 }
 
-async function startReview(options, { stderr, env, cwd, signal }) {
+// The schema's own checks plus what scrubbing can empty. Returns a list of
+// problems; empty means the review may be printed or posted.
+export function reviewProblems(review) {
+  const problems = validate(readOutputSchema(), review);
+  review.findings?.forEach((f, i) => {
+    if (typeof f.title === "string" && f.title.trim() === "") problems.push(`/findings/${i}/title: empty after scrubbing`);
+    if (typeof f.body === "string" && f.body.trim() === "") problems.push(`/findings/${i}/body: empty after scrubbing`);
+  });
+  return problems;
+}
+
+async function startReview(options, { stderr, env, cwd, signal, secrets }) {
   // Codex's event stream does not name the model it used (thread.started
   // carries only a thread id), so an unset --model is reported as such.
   stderr.write(`codex-mr-review: reviewing with model ${options.model ?? "Codex's default"}, reasoning effort ${options.reasoningEffort}\n`);
@@ -285,29 +296,31 @@ async function startReview(options, { stderr, env, cwd, signal }) {
     env,
     signal,
     warn: (message) => stderr.write(`codex-mr-review: warning: ${message}\n`),
+    redact: secrets,
   });
+  if (!outcome.ok) return outcome;
   // The one scrub point for everything that came from Codex: every
-  // string in the review, before it is printed or posted.
-  return outcome.ok ? { ok: true, review: scrubReview(outcome.review) } : outcome;
+  // string in the review. Then the scrubbed review is validated, for every
+  // output format, before anything is printed or posted.
+  const review = scrubReview(outcome.review);
+  const problems = reviewProblems(review);
+  if (problems.length > 0) return { ok: false, error: `the review does not match its schema: ${problems.join("; ")}` };
+  return { ok: true, review };
 }
 
-async function runDryRun(options, { stdout, stderr, env, cwd, signal }) {
-  const outcome = await startReview(options, { stderr, env, cwd, signal });
+async function runDryRun(options, { stdout, stderr, env, cwd, signal, secrets }) {
+  const outcome = await startReview(options, { stderr, env, cwd, signal, secrets });
   // A failed review prints no findings: only the reason, on stderr.
   if (!outcome.ok) {
     stderr.write(`codex-mr-review: review failed: ${outcome.error}\n`);
     return EXIT_FAILURE;
   }
-  return printReview(options, outcome.review, { stdout, stderr });
+  return printReview(options, outcome.review, { stdout });
 }
 
-function printReview(options, review, { stdout, stderr }) {
+// review was validated in startReview, before anything was posted.
+function printReview(options, review, { stdout }) {
   if (options.format === "json") {
-    const errors = validate(readOutputSchema(), review);
-    if (errors.length > 0) {
-      stderr.write(`codex-mr-review: review failed: output does not match its schema: ${errors.join("; ")}\n`);
-      return EXIT_FAILURE;
-    }
     stdout.write(`${JSON.stringify(review, null, 2)}\n`);
   } else {
     stdout.write(renderText(review));
@@ -354,11 +367,11 @@ async function runAndPost(options, { stdout, stderr, env, cwd, signal, secrets, 
   }
   log(`posting to merge request !${target.mr}; the marker will name ${shaInfo.sha} (from ${shaInfo.source})`);
 
-  const outcome = await startReview(options, { stderr, env, cwd, signal });
+  const outcome = await startReview(options, { stderr, env, cwd, signal, secrets });
   if (!outcome.ok) {
     log(`review failed: ${outcome.error}`);
     try {
-      await client.createNote(failureBody(outcome.error));
+      await client.createNote(failureBody(outcome.error, secrets));
       log("posted a failure note, with no marker");
     } catch (err) {
       if (!(err instanceof GitLabError)) throw err;
@@ -388,7 +401,7 @@ async function runAndPost(options, { stdout, stderr, env, cwd, signal, secrets, 
     log(`posting failed, and no marker was posted: ${err.message}`);
     return EXIT_FAILURE;
   }
-  return printReview(options, review, { stdout, stderr });
+  return printReview(options, review, { stdout });
 }
 
 function isEntryPoint() {

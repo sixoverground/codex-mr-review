@@ -160,7 +160,9 @@ export function parseEvents(stdout) {
     try {
       event = JSON.parse(line);
     } catch {
-      throw new CodexOutputError(`codex printed a line that is not JSON: ${line.slice(0, 120)}`);
+      // The whole line: cutting it here, before redaction, could cut a
+      // secret in half. Messages are shortened later, after redaction.
+      throw new CodexOutputError(`codex printed a line that is not JSON: ${line}`);
     }
     if (event === null || typeof event !== "object") {
       throw new CodexOutputError("codex printed an event that is not an object");
@@ -183,7 +185,7 @@ export function parseReviewText(text) {
   }
   const trimmed = text.trim();
   for (const re of FAILURE_MESSAGES) {
-    if (re.test(trimmed)) throw new CodexOutputError(`codex did not finish the review: ${trimmed.split("\n")[0]}`);
+    if (re.test(trimmed)) throw new CodexOutputError(`codex did not finish the review: ${trimmed}`);
   }
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const headerAt = lines.findIndex((l) => HEADER.test(l));
@@ -212,7 +214,7 @@ export function parseReviewText(text) {
       continue;
     }
     if (!current || !line.startsWith("  ")) {
-      throw new CodexOutputError(`unexpected line in codex findings: ${line.slice(0, 120)}`);
+      throw new CodexOutputError(`unexpected line in codex findings: ${line}`);
     }
     current.bodyLines.push(line.slice(2));
   }

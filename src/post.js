@@ -6,6 +6,7 @@
 // from a sha the caller took from the CI environment or the checkout, and
 // only after every finding has been posted.
 
+import { excerpt } from "./redact.js";
 import { renderFinding, renderSummary } from "./render.js";
 
 export const MARKER_PREFIX = "<!-- phases:review";
@@ -97,8 +98,10 @@ export function summaryBody(review, { sha, reviewer, notReposted, reopened }) {
   return `${parts.join("\n")}\n`;
 }
 
-export function failureBody(error) {
-  const first = scrubModelText(String(error).split("\n")[0]).slice(0, 300);
+// redact is the secret redactor. The whole error is scrubbed and redacted
+// before its first line is taken and cut.
+export function failureBody(error, redact = (s) => s) {
+  const first = excerpt(error, { clean: (s) => redact(scrubModelText(s)), limit: 300, firstLine: true });
   return `### \u{1F4A1} Codex Review\n\nThe review did not complete: ${first}\n`;
 }
 

@@ -17,7 +17,8 @@ export const POSITION_ERROR = {
 //   mr              what GET /projects/:id/merge_requests/:iid returns
 //   rejectPosition  (position) => true to answer a positioned thread
 //                   with a 400, as GitLab does for a line outside the diff
-//   fail            (method, path) => status to answer with instead
+//   fail            (method, path) => status to answer with instead, or
+//                   { status, body } to choose the error body too
 //   redirect        (method, path) => a URL to answer with a 302 to
 export async function startMockGitLab({
   token = MOCK_TOKEN,
@@ -47,6 +48,7 @@ export async function startMockGitLab({
       if (to) return send(302, { message: "302 Found" }, { Location: to });
       if (req.headers["private-token"] !== token) return send(401, { message: "401 Unauthorized" });
       const forced = state.fail(req.method, url.pathname);
+      if (forced && typeof forced === "object") return send(forced.status, forced.body);
       if (forced) return send(forced, { message: `${forced} forced by the test` });
 
       const p = url.pathname;

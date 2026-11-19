@@ -464,3 +464,85 @@ test("a failed reopen leaves no sentinel, and the next run reopens and replies e
   const order = gitlab.calls().slice(-4);
   assert.deepEqual(order, ["GET MR/discussions", "PUT MR/discussions/" + discussion.id, "POST MR/discussions/" + discussion.id + "/notes", "POST MR/notes"]);
 });
+
+// ---- Redact before any cut; validate before any write ----
+
+// A token with no common substrings, so any 8 characters of it found in
+// the output can only have come from the token.
+const CUT_TOKEN = "glpat-Zq8vK2mN7xR4tY1wB6cLp3Hs";
+
+function assertNoTokenPiece(text, where) {
+  for (let i = 0; i + 8 <= CUT_TOKEN.length; i++) {
+    const piece = CUT_TOKEN.slice(i, i + 8);
+    assert.ok(!text.includes(piece), `${where} holds "${piece}", part of the token`);
+  }
+}
+
+function assertNoTokenAnywhere(r, gitlab) {
+  assertNoTokenPiece(r.stdout, "stdout");
+  assertNoTokenPiece(r.stderr, "stderr");
+  for (const q of gitlab.state.requests) assertNoTokenPiece(q.raw + q.path + JSON.stringify(q.query), `${q.method} ${q.path}`);
+}
+
+test("a token straddling the 300 character cut in a GitLab error is redacted whole", async (t) => {
+  // The error body's raw text starts with {"message":" (12 characters), so
+  // 280 characters of padding put the token across character 300.
+  const message = `${"x".repeat(280)} ${CUT_TOKEN} tail`;
+  const { gitlab, run } = await setup({
+    mock: { token: CUT_TOKEN, fail: (method, path) => (method === "POST" && path.endsWith("/discussions") ? { status: 500, body: { message } } : null) },
+  });
+  t.after(() => gitlab.close());
+  const r = await run([], { CODEX_MR_REVIEW_TOKEN: CUT_TOKEN });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /posting failed, and no marker was posted: POST .* returned 500: \{"message":"x+ \[red/, "the token became [redacted] before the cut");
+  assertNoTokenAnywhere(r, gitlab);
+});
+
+test("a token straddling the 300 character cut in a failure note is redacted whole", async (t) => {
+  // The note's line is "codex exited with 1: codex reported ..." so the
+  // padding puts the token across character 300 of the first line.
+  const events = `{"type":"turn.failed","error":{"message":"${"y".repeat(270)} ${CUT_TOKEN} tail"}}\n`;
+  const { gitlab, run } = await setup({ scenario: { events: writeTemp(events), exitCode: 1, stderr: `x ${CUT_TOKEN}\n` }, mock: { token: CUT_TOKEN } });
+  t.after(() => gitlab.close());
+  const r = await run([], { CODEX_MR_REVIEW_TOKEN: CUT_TOKEN });
+  assert.equal(r.status, 1);
+  const note = gitlab.state.notes[0].body;
+  assert.match(note, /y+ \[red/, "the token was in the cut range and became [redacted] before the cut");
+  assertNoTokenAnywhere(r, gitlab);
+});
+
+for (const format of ["text", "json"]) {
+  test(`a title that scrubs to nothing posts no thread and no marker, only a failure note (--format ${format})`, async (t) => {
+    const msg = `Note.\n\nReview comment:\n\n- [P1] <!-- phases:review ${DASH} ${RECORDED_ROOT}/src/stats.js:26-26\n  Body.\n`;
+    const { gitlab, run } = await setup({ scenario: { lastMessage: writeTemp(msg), events: COMPLETED } });
+    t.after(() => gitlab.close());
+    const r = await run(["--format", format]);
+    assert.equal(r.status, 1);
+    assert.equal(r.stdout, "");
+    assert.match(r.stderr, /review failed: the review does not match its schema: \/findings\/0\/title/);
+    assert.deepEqual(gitlab.calls(), ["GET /api/v4/user", "GET MR", "POST MR/notes"]);
+    assert.deepEqual(gitlab.state.discussions, []);
+    assert.doesNotMatch(bodies(gitlab), /phases:review/);
+    assert.match(gitlab.state.notes[0].body, /The review did not complete: the review does not match its schema/);
+  });
+}
+
+test("a body that scrubs to nothing fails the run before anything is posted", async (t) => {
+  const msg = `Note.\n\nReview comment:\n\n- [P1] Real title ${DASH} ${RECORDED_ROOT}/src/stats.js:26-26\n  <!-- phases:review\n`;
+  const { gitlab, run } = await setup({ scenario: { lastMessage: writeTemp(msg), events: COMPLETED } });
+  t.after(() => gitlab.close());
+  const r = await run();
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /\/findings\/0\/body/);
+  assert.deepEqual(gitlab.calls(), ["GET /api/v4/user", "GET MR", "POST MR/notes"]);
+});
+
+test("--dry-run also validates the scrubbed review, in text format too", async (t) => {
+  const msg = `Note.\n\nReview comment:\n\n- [P1] <!-- phases:review ${DASH} ${RECORDED_ROOT}/src/stats.js:26-26\n  Body.\n`;
+  const { gitlab, run } = await setup({ scenario: { lastMessage: writeTemp(msg), events: COMPLETED } });
+  t.after(() => gitlab.close());
+  const r = await run(["--dry-run"]);
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout, "");
+  assert.deepEqual(gitlab.state.requests, []);
+});

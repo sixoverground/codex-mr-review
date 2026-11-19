@@ -51,6 +51,20 @@ export function makeRedactor(secrets) {
   };
 }
 
+// Shortens text for a message without ever cutting a secret in half: the
+// whole text is cleaned first, then reshaped (first line, collapsed
+// whitespace), cleaned again in case reshaping joined a secret together,
+// and only then cut. Every truncation of text that can hold a secret or
+// model output goes through here. clean is the redactor (and, for model
+// text, the scrub) to apply.
+export function excerpt(text, { clean, limit, firstLine = false, collapse = false }) {
+  let out = clean(String(text));
+  if (firstLine) out = out.split("\n")[0];
+  if (collapse) out = out.replace(/\s+/g, " ").trim();
+  out = clean(out);
+  return out.length > limit ? `${out.slice(0, limit)}...` : out;
+}
+
 // A writable-like object that redacts everything written to stream.
 export function redactingStream(stream, redact) {
   return { write: (chunk) => stream.write(redact(String(chunk))) };
