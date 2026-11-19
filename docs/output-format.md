@@ -73,6 +73,21 @@ Here are some automated review suggestions for this merge request.
 
 With no findings the second paragraph reads "Codex found no issues in this change." When the head commit changes `AGENTS.md` (or adds `AGENTS.override.md`), a line says the review followed the base branch's copy. The hidden receipt marker and the "About Codex in GitHub" block are left out for the same reason as above.
 
+## On a GitLab merge request
+
+Without `--dry-run`:
+
+- **A finding** is an inline thread whose body is the rendering above, unchanged, followed by a hidden `<!-- codex-mr-review:fingerprint <64 hex> -->` line used to recognise it on a later run. The thread is anchored with a text position: `base_sha`, `start_sha` and `head_sha` from the merge request's `diff_refs`, `new_path`, `old_path` (the pre-rename path when the file was renamed), `new_line` (the finding's first line), and `old_line` as well when that line is unchanged context.
+- **When GitLab rejects the position** (a 400), the same body is posted as a general thread, which is still resolvable, with a first line citing the location, such as `` `src/stats.js:26` ``.
+- **A reopened thread** gets one reply, ``Still present at `<sha>`.``, with a hidden `<!-- codex-mr-review:reopened -->` so it is reopened only once.
+- **The summary note** is the summary above with the 40 character sha's first ten characters as the reviewed commit, then `**Findings:** 1 P1, 1 P3` (or `none`), a sentence each for findings not posted again and threads reopened when there are any, then a blank line and the marker:
+
+  ```
+  <!-- phases:review v=1 reviewer=codex sha=<40 character sha> -->
+  ```
+
+- **A failed review** posts only `### 💡 Codex Review` and "The review did not complete:" with the first line of the reason. No marker.
+
 ## `--dry-run --format text`
 
 Each finding under its location (`path:start-end`, or just the path when Codex gave no range), rendered as above, separated by `---`, then the summary.

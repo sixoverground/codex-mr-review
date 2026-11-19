@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { main, parseReviewArgs, EXIT_OK, EXIT_FAILURE, EXIT_USAGE } from "../src/cli.js";
+import { main, parseReviewArgs, EXIT_OK, EXIT_USAGE } from "../src/cli.js";
 
 const CLI = fileURLToPath(new URL("../src/cli.js", import.meta.url));
 const PKG = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
@@ -59,10 +59,10 @@ test("an unknown command is a usage error", async () => {
   assert.match(r.err, /unknown command "frobnicate"/);
 });
 
-test("review without --dry-run exits non-zero because posting is not implemented", () => {
-  const r = run(["review", "--base", "main"]);
-  assert.equal(r.status, EXIT_FAILURE);
-  assert.match(r.stderr, /not implemented/);
+test("review without --dry-run and without a GitLab target is a usage error naming what is missing", () => {
+  const r = spawnSync(process.execPath, [CLI, "review", "--base", "main"], { encoding: "utf8", env: { PATH: process.env.PATH } });
+  assert.equal(r.status, EXIT_USAGE);
+  assert.match(r.stderr, /posting needs --gitlab-url or CI_SERVER_URL, --project or CI_PROJECT_ID, --mr or CI_MERGE_REQUEST_IID, CODEX_MR_REVIEW_TOKEN/);
   assert.equal(r.stdout, "");
 });
 
@@ -83,6 +83,7 @@ test("parseReviewArgs applies defaults", () => {
     help: false,
     base: "abc123",
     head: "HEAD",
+    headExplicit: false,
     dryRun: false,
     format: "text",
     reviewer: "codex",
@@ -90,6 +91,9 @@ test("parseReviewArgs applies defaults", () => {
     timeoutSeconds: 900,
     model: null,
     reasoningEffort: "high",
+    gitlabUrl: null,
+    project: null,
+    mr: null,
   });
 });
 

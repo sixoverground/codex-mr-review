@@ -2,7 +2,7 @@
 
 Run the Codex CLI's review mode in GitLab CI and post findings to merge requests.
 
-**Status: dry run only.** `review --dry-run` runs Codex's review mode on a change and prints the findings. Nothing is posted yet: `review` without `--dry-run` exits with "not implemented".
+**Status: posts to GitLab.** `review` runs Codex's review mode on a change and posts the findings, a summary and the review marker to a merge request. `review --dry-run` prints the findings instead and makes no network call. The GitLab CI template is not written yet.
 
 ## What it is for
 
@@ -28,6 +28,7 @@ codex-mr-review --version
 codex-mr-review review --base <ref> [--head <ref>] [--dry-run] [--format text|json]
                        [--reviewer <name>] [--clean-emoji] [--timeout <seconds>]
                        [--model <name>] [--reasoning-effort <level>]
+                       [--gitlab-url <url>] [--project <id|path>] [--mr <iid>]
 ```
 
 `--dry-run` prints the findings locally and posts nothing. `--base` is required. Run it from inside the repository; it reviews `--head` (default `HEAD`) against `--base` in a temporary worktree, with every `AGENTS.md` and `AGENTS.override.md` (at any depth) taken from `--base`, and removes the worktree afterwards.
@@ -47,15 +48,41 @@ The effort defaults to `high`, not Codex's built-in default. In a side-by-side c
 
 The tool prints the model and effort it asked for on stderr (`reviewing with model Codex's default, reasoning effort high`), and `--format json` includes them as `model` (or `null`) and `reasoning_effort`. Codex does not report which model it used, so an unset `--model` is reported as Codex's default rather than a name. Details are in [docs/codex-output.md](docs/codex-output.md).
 
+### Posting to a merge request
+
+Without `--dry-run`, the tool posts. It needs four things, each from a flag or else from GitLab CI's own variables:
+
+| What | Flag | CI variable |
+|---|---|---|
+| GitLab instance | `--gitlab-url https://gitlab.com` | `CI_SERVER_URL` |
+| Project id or path | `--project group/project` | `CI_MERGE_REQUEST_PROJECT_ID`, then `CI_PROJECT_ID` |
+| Merge request iid | `--mr 12` | `CI_MERGE_REQUEST_IID` |
+| Token | none (environment only) | `CODEX_MR_REVIEW_TOKEN` |
+
+If any is missing it exits 2 and names it, before Codex runs. The token needs the `api` scope on an account (ideally a dedicated bot or project access token) that can comment on the merge request. `GITLAB_TOKEN` is deliberately not used as a fallback: it is often a person's own token, and the review should post as an identity a consumer can pin.
+
+What it posts, in this order (layouts in [docs/output-format.md](docs/output-format.md)):
+
+1. Each new finding as an inline, resolvable thread on the line, built from the merge request's `diff_refs`. If GitLab rejects the position (for example a line outside the diff), the finding is posted as a general thread that cites `path:line`, so it is never dropped.
+2. A finding already posted by an earlier review (matched by a fingerprint hidden in the thread) is not posted again. If its thread was resolved and the finding is still there, the thread gets one reply and is reopened, once. After that it is only counted.
+3. A summary note: the summary, counts by priority, how many findings were not posted again or were reopened, whether `AGENTS.md` changed, and the review marker `<!-- phases:review v=1 reviewer=<name> sha=<sha> -->` on its last line. `--reviewer` sets the name.
+4. With `--clean-emoji`, a thumbs up on the merge request when the review found nothing.
+
+The marker's sha is the pipeline's: `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` when set (the branch head in a merged-results pipeline), else `CI_COMMIT_SHA`, else the commit checked out where the tool runs. It is never read from model output. The marker is posted only after Codex exited successfully and every finding was posted. A failed review posts a short failure note with no marker and exits 1.
+
+Positions are sent only when the merge request's `diff_refs.head_sha` is the reviewed commit. If the merge request has moved on, findings are posted as general threads citing `path:line`, since a line number from one tree can land on the wrong line of another. If `--head` is passed and is not the pipeline's commit, the findings are still posted but the marker is withheld, the summary says why, and the tool exits 1. Without `--head` a mismatch only warns, because a merged-results pipeline checks out a merge commit while the marker names the source branch head.
+
+Model text is scrubbed before posting: `<!-- phases:review` and the tool's own hidden comment prefixes are removed, and every known secret is redacted.
+
 ### Environment
 
 Codex runs with an allowlisted environment (`src/env.js`): `PATH`, `HOME`, locale and temp variables, `CODEX_HOME`, `CODEX_API_KEY`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, proxy variables and `SSL_CERT_FILE` / `SSL_CERT_DIR`. Nothing else reaches it. In particular `GITLAB_TOKEN`, `CI_JOB_TOKEN` and `CODEX_MR_REVIEW_TOKEN` never do.
 
-`CODEX_MR_REVIEW_TOKEN` is the name reserved for the GitLab token this tool will use to post. Nothing reads it yet.
+`CODEX_MR_REVIEW_TOKEN` is the GitLab token the tool posts with. Only the tool's own requests to GitLab carry it, in the `PRIVATE-TOKEN` header.
 
 The values of those three tokens and of `OPENAI_API_KEY` and `CODEX_API_KEY` are replaced with `[redacted]` in everything the tool prints. See [SECURITY.md](SECURITY.md).
 
-Install instructions and the GitLab CI template will follow once the tool posts.
+Install instructions and the GitLab CI template will follow.
 
 ## Development
 
