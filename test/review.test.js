@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -62,7 +62,7 @@ test("a dry run prints the recorded finding with a path, a line range and a prio
   const fake = makeFakeCodex();
   const r = review(repo, fake, ["--base", repo.base, "--dry-run"]);
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(r.stderr, "");
+  assert.equal(r.stderr, "codex-mr-review: reviewing with model Codex's default, reasoning effort high\n");
   assert.match(r.stdout, /^src\/stats\.js:26-26\n\n\*\*<sub><sub>!\[P1 Badge\]/);
   assert.match(r.stdout, /Stop sumFirst after n elements\*\*/);
   assert.match(r.stdout, /Reviewed commit:\*\* `[0-9a-f]{10}`/);
@@ -80,6 +80,48 @@ test("codex is started in review mode against the base, in a worktree of the hea
   const cwd = readFileSync(join(fake.record, "cwd.txt"), "utf8");
   assert.notEqual(cwd, repo.dir);
   assert.match(cwd, /codex-mr-review-[^/]+\/worktree$/);
+});
+
+test("the default run asks Codex for high reasoning effort and passes no --model", () => {
+  const repo = makeRepo();
+  const fake = makeFakeCodex();
+  const r = review(repo, fake, ["--base", repo.base, "--dry-run", "--format", "json"]);
+  assert.equal(r.status, 0, r.stderr);
+  const args = recorded(fake, "args.json");
+  assert.ok(!args.includes("--model") && !args.includes("-m"), "no model flag when --model is unset");
+  assert.equal(args[args.indexOf("-c") + 1], 'model_reasoning_effort="high"');
+  assert.ok(args.indexOf("-c") < args.indexOf("review"), "exec options go before the subcommand");
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.model, null);
+  assert.equal(out.reasoning_effort, "high");
+  assert.match(r.stderr, /reviewing with model Codex's default, reasoning effort high/);
+});
+
+test("--model and --reasoning-effort reach the codex child and the JSON output", () => {
+  const repo = makeRepo();
+  const fake = makeFakeCodex();
+  const r = review(repo, fake, ["--base", repo.base, "--dry-run", "--format", "json", "--model", "test-model-1", "--reasoning-effort", "xhigh"]);
+  assert.equal(r.status, 0, r.stderr);
+  const args = recorded(fake, "args.json");
+  assert.equal(args[args.indexOf("--model") + 1], "test-model-1");
+  assert.equal(args[args.indexOf("-c") + 1], 'model_reasoning_effort="xhigh"');
+  assert.ok(args.indexOf("--model") < args.indexOf("review"));
+  const out = JSON.parse(r.stdout);
+  assert.deepEqual(validate(readOutputSchema(), out), []);
+  assert.equal(out.model, "test-model-1");
+  assert.equal(out.reasoning_effort, "xhigh");
+  assert.match(r.stderr, /reviewing with model test-model-1, reasoning effort xhigh/);
+});
+
+test("a bad --reasoning-effort exits 2 without starting codex", () => {
+  const repo = makeRepo();
+  const fake = makeFakeCodex();
+  const r = review(repo, fake, ["--base", repo.base, "--dry-run", "--reasoning-effort", "extreme"]);
+  assert.equal(r.status, 2);
+  assert.equal(r.stdout, "");
+  assert.match(r.stderr, /--reasoning-effort must be one of none, minimal, low, medium, high, xhigh, max, got "extreme"/);
+  assert.ok(!existsSync(join(fake.record, "args.json")), "codex never started");
+  assert.equal(r.worktrees, 1);
 });
 
 test("--format json validates against the checked-in schema", () => {

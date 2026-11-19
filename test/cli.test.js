@@ -88,7 +88,27 @@ test("parseReviewArgs applies defaults", () => {
     reviewer: "codex",
     cleanEmoji: false,
     timeoutSeconds: 900,
+    model: null,
+    reasoningEffort: "high",
   });
+});
+
+test("parseReviewArgs reads --model and --reasoning-effort", () => {
+  const o = parseReviewArgs(["--base", "main", "--model", "some-model.1", "--reasoning-effort", "xhigh"]);
+  assert.equal(o.model, "some-model.1");
+  assert.equal(o.reasoningEffort, "xhigh");
+  for (const level of ["none", "minimal", "low", "medium", "high", "xhigh", "max"]) {
+    assert.equal(parseReviewArgs(["--base", "main", "--reasoning-effort", level]).reasoningEffort, level);
+  }
+});
+
+test("parseReviewArgs rejects an unknown reasoning effort or a bad model name", () => {
+  for (const bad of ["extreme", "HIGH", "", "high "]) {
+    assert.throws(() => parseReviewArgs(["--base", "main", "--reasoning-effort", bad]), /--reasoning-effort/, bad);
+  }
+  for (const bad of ["", "-c", "--json", "a model", 'x"y']) {
+    assert.throws(() => parseReviewArgs(["--base", "main", `--model=${bad}`]), /--model/, bad);
+  }
 });
 
 test("parseReviewArgs reads every flag", () => {

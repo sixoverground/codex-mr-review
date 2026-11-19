@@ -88,6 +88,8 @@ One JSON object, valid against `schema/review-output.schema.json`:
   "base": "<40 character sha>",
   "head": "<40 character sha>",
   "codex_version": "0.147.0",
+  "model": null,
+  "reasoning_effort": "high",
   "agents_md_changed": false,
   "explanation": "...",
   "findings": [
@@ -103,6 +105,8 @@ One JSON object, valid against `schema/review-output.schema.json`:
   ]
 }
 ```
+
+`model` is the `--model` passed to Codex, or `null` when Codex used its own default. `reasoning_effort` is the level passed, `high` unless `--reasoning-effort` says otherwise.
 
 `start_line` and `end_line` are `null` together when a finding has no line range. `priority` is one of `P0` to `P3`. `title` has the `[P1]` prefix removed.
 

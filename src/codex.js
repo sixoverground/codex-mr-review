@@ -26,15 +26,32 @@ const FAILURE_MESSAGES = [
 
 export class CodexOutputError extends Error {}
 
-export function reviewArgs({ baseSha, lastMessagePath }) {
+// The reasoning efforts the model API accepts through codex-cli 0.147.0,
+// as listed by its own error for an unknown value (see
+// docs/codex-output.md). Codex passes the value through unchecked, so the
+// tool checks it.
+export const REASONING_EFFORTS = Object.freeze(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+export const DEFAULT_REASONING_EFFORT = "high";
+
+// A model name: letters, digits, dots, colons, underscores and dashes, not
+// starting with a dash, so it can never be read as another flag.
+export const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+
+export function reviewArgs({ baseSha, lastMessagePath, model = null, reasoningEffort = DEFAULT_REASONING_EFFORT }) {
+  if (!REASONING_EFFORTS.includes(reasoningEffort)) throw new Error(`invalid reasoning effort ${reasoningEffort}`);
+  if (model !== null && !MODEL_PATTERN.test(model)) throw new Error(`invalid model name ${model}`);
   // Exec options go before the review subcommand. There is no prompt
-  // argument: the review uses Codex's own review instructions.
+  // argument: the review uses Codex's own review instructions. The user's
+  // config.toml is ignored, so the model and effort come only from here;
+  // with no --model, Codex uses its built-in default model.
   return [
     "exec",
     "--sandbox", "read-only",
     "--ephemeral",
     "--ignore-user-config",
     "--json",
+    ...(model === null ? [] : ["--model", model]),
+    "-c", `model_reasoning_effort="${reasoningEffort}"`,
     "--output-last-message", lastMessagePath,
     "review",
     "--base", baseSha,

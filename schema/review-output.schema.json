@@ -5,13 +5,19 @@
   "description": "What `codex-mr-review review --dry-run --format json` prints for a completed review. A failed review prints nothing on stdout.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "status", "base", "head", "codex_version", "agents_md_changed", "explanation", "findings"],
+  "required": ["version", "status", "base", "head", "codex_version", "model", "reasoning_effort", "agents_md_changed", "explanation", "findings"],
   "properties": {
     "version": { "const": 1 },
     "status": { "const": "completed" },
     "base": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "head": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "codex_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+" },
+    "model": {
+      "description": "The --model passed to Codex, or null when Codex used its own default model.",
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "reasoning_effort": { "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max"] },
     "agents_md_changed": { "type": "boolean" },
     "explanation": { "type": "string" },
     "findings": {

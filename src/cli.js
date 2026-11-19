@@ -9,6 +9,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
+import { DEFAULT_REASONING_EFFORT, MODEL_PATTERN, REASONING_EFFORTS } from "./codex.js";
 import { makeRedactor, redactingStream, secretValues } from "./redact.js";
 import { runReview } from "./review.js";
 import { renderText } from "./render.js";
@@ -29,6 +30,8 @@ const REVIEW_OPTIONS = {
   reviewer: { type: "string", default: "codex" },
   "clean-emoji": { type: "boolean", default: false },
   timeout: { type: "string", default: "900" },
+  model: { type: "string" },
+  "reasoning-effort": { type: "string", default: DEFAULT_REASONING_EFFORT },
   help: { type: "boolean", short: "h", default: false },
 };
 
@@ -48,6 +51,12 @@ const REVIEW_OPTIONS_HELP = `Review options:
                        has no findings
   --timeout <seconds>  Give up on the review after this many seconds
                        (default: 900)
+  --model <name>       Model Codex reviews with (default: Codex's own
+                       default model; ~/.codex/config.toml is ignored)
+  --reasoning-effort <level>
+                       Reasoning effort for the review, one of
+                       ${REASONING_EFFORTS.join(", ")}
+                       (default: ${DEFAULT_REASONING_EFFORT})
 `;
 
 export const MAIN_HELP = `Usage: codex-mr-review <command> [options]
@@ -91,6 +100,12 @@ export function parseReviewArgs(args) {
   if (!REVIEWER_PATTERN.test(v.reviewer)) {
     throw new UsageError(`review: --reviewer must match [a-z0-9-]+, got "${v.reviewer}"`);
   }
+  if (!REASONING_EFFORTS.includes(v["reasoning-effort"])) {
+    throw new UsageError(`review: --reasoning-effort must be one of ${REASONING_EFFORTS.join(", ")}, got "${v["reasoning-effort"]}"`);
+  }
+  if (v.model !== undefined && !MODEL_PATTERN.test(v.model)) {
+    throw new UsageError(`review: --model must be a model name (letters, digits, ".", "_", ":" and "-", not starting with "-"), got "${v.model}"`);
+  }
   const timeout = Number(v.timeout);
   if (!Number.isInteger(timeout) || timeout <= 0) {
     throw new UsageError(`review: --timeout must be a positive whole number of seconds, got "${v.timeout}"`);
@@ -104,6 +119,8 @@ export function parseReviewArgs(args) {
     reviewer: v.reviewer,
     cleanEmoji: v["clean-emoji"],
     timeoutSeconds: timeout,
+    model: v.model ?? null,
+    reasoningEffort: v["reasoning-effort"],
   };
 }
 
@@ -170,10 +187,15 @@ async function dispatch(argv, { stdout, stderr, env, cwd, signal }) {
 }
 
 async function runDryRun(options, { stdout, stderr, env, cwd, signal }) {
+  // Codex's event stream does not name the model it used (thread.started
+  // carries only a thread id), so an unset --model is reported as such.
+  stderr.write(`codex-mr-review: reviewing with model ${options.model ?? "Codex's default"}, reasoning effort ${options.reasoningEffort}\n`);
   const outcome = await runReview({
     base: options.base,
     head: options.head,
     timeoutSeconds: options.timeoutSeconds,
+    model: options.model,
+    reasoningEffort: options.reasoningEffort,
     cwd,
     env,
     signal,

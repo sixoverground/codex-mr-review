@@ -12,7 +12,7 @@ import { join } from "node:path";
 
 import { buildChildEnv } from "./env.js";
 import {
-  CodexOutputError, TESTED_CODEX, codexVersion, isTestedVersion, parseEvents, parseReviewText, reviewArgs, runCodex,
+  CodexOutputError, DEFAULT_REASONING_EFFORT, TESTED_CODEX, codexVersion, isTestedVersion, parseEvents, parseReviewText, reviewArgs, runCodex,
 } from "./codex.js";
 import { FindingError, normaliseFinding } from "./findings.js";
 import {
@@ -40,6 +40,8 @@ export async function runReview({
   base,
   head = "HEAD",
   timeoutSeconds,
+  model = null,
+  reasoningEffort = DEFAULT_REASONING_EFFORT,
   cwd = process.cwd(),
   env = process.env,
   codexBin = "codex",
@@ -75,7 +77,7 @@ export async function runReview({
 
     const run = await runCodex({
       bin: codexBin,
-      args: reviewArgs({ baseSha, lastMessagePath }),
+      args: reviewArgs({ baseSha, lastMessagePath, model, reasoningEffort }),
       cwd: worktree,
       env: childEnv,
       timeoutMs: timeoutSeconds * 1000,
@@ -118,6 +120,8 @@ export async function runReview({
         base: baseSha,
         head: headSha,
         codex_version: version,
+        model,
+        reasoning_effort: reasoningEffort,
         agents_md_changed: agentsChanged,
         explanation: parsed.explanation,
         findings,

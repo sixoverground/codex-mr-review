@@ -13,6 +13,8 @@ function sample() {
     base: SHA,
     head: "b".repeat(40),
     codex_version: "0.147.0",
+    model: null,
+    reasoning_effort: "high",
     agents_md_changed: false,
     explanation: "One bug.",
     findings: [{
@@ -28,6 +30,7 @@ test("a well-formed review validates against the checked-in schema", () => {
   noRange.findings[0].start_line = null;
   noRange.findings[0].end_line = null;
   assert.deepEqual(validate(readOutputSchema(), noRange), []);
+  assert.deepEqual(validate(readOutputSchema(), { ...sample(), model: "some-model", reasoning_effort: "max" }), []);
 });
 
 for (const [name, mutate, expected] of [
@@ -39,6 +42,8 @@ for (const [name, mutate, expected] of [
   ["a fractional line", (r) => { r.findings[0].start_line = 1.5; }, /expected integer or null, got number/],
   ["a zero line", (r) => { r.findings[0].end_line = 0; }, /less than 1/],
   ["an empty title", (r) => { r.findings[0].title = ""; }, /shorter than 1/],
+  ["an unknown reasoning effort", (r) => { r.reasoning_effort = "extreme"; }, /reasoning_effort/],
+  ["an empty model name", (r) => { r.model = ""; }, /\/model: shorter than 1/],
   ["another version", (r) => { r.version = 2; }, /\/version: expected 1/],
   ["findings that are not a list", (r) => { r.findings = {}; }, /expected array/],
 ]) {

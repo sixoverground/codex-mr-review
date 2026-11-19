@@ -15,10 +15,20 @@ test("reviewArgs uses the read-only sandbox, review mode, --json and --ephemeral
   const args = reviewArgs({ baseSha: "a".repeat(40), lastMessagePath: "/tmp/last.txt" });
   assert.deepEqual(args, [
     "exec", "--sandbox", "read-only", "--ephemeral", "--ignore-user-config", "--json",
+    "-c", 'model_reasoning_effort="high"',
     "--output-last-message", "/tmp/last.txt", "review", "--base", "a".repeat(40),
   ]);
   // Nothing follows the review options: no custom prompt, positional or "-".
   assert.equal(args.at(-2), "--base");
+});
+
+test("reviewArgs passes --model before the subcommand only when one is set", () => {
+  const args = reviewArgs({ baseSha: "a".repeat(40), lastMessagePath: "/l", model: "m-1", reasoningEffort: "low" });
+  assert.deepEqual(args.slice(args.indexOf("--model"), args.indexOf("--model") + 4), ["--model", "m-1", "-c", 'model_reasoning_effort="low"']);
+  assert.ok(args.indexOf("--model") < args.indexOf("review"));
+  assert.ok(!reviewArgs({ baseSha: "a".repeat(40), lastMessagePath: "/l" }).includes("--model"));
+  assert.throws(() => reviewArgs({ baseSha: "a", lastMessagePath: "/l", reasoningEffort: "extreme" }));
+  assert.throws(() => reviewArgs({ baseSha: "a", lastMessagePath: "/l", model: "--json" }));
 });
 
 test("parseEvents reads the recorded real run", () => {

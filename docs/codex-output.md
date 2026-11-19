@@ -6,6 +6,7 @@ Observed on **codex-cli 0.147.0** (`codex --version`), macOS, logged in with Cha
 
 ```
 codex exec --sandbox read-only --ephemeral --ignore-user-config --json \
+  [--model <name>] -c 'model_reasoning_effort="<level>"' \
   --output-last-message <scratch>/last-message.txt \
   review --base <base sha>
 ```
@@ -16,6 +17,16 @@ run with the worktree of the head commit as its working directory and an allowli
 - There is no prompt argument. `codex exec review` accepts one ("Custom review instructions"), and the tool never passes it, so the review uses Codex's own review instructions plus the repository's `AGENTS.md` files. Codex reads `AGENTS.md` and `AGENTS.override.md` from the root down to its working directory; the tool resets every one of them, at any depth, to the base commit's copy, so it does not depend on which ones Codex reads.
 - `--base` is documented as taking a branch. A full commit sha works: in the recorded run Codex diffed against `a488c33...` directly.
 - `--ignore-user-config` is passed so the reviewer's `~/.codex/config.toml` does not change the review. On the machine this was recorded on, that config selects a model a ChatGPT login cannot use, and the review failed with `model_not_found` (recorded in `test/fixtures/codex-0.147.0/failed-model-not-found.events.jsonl`). The same config also starts MCP servers. Authentication still comes from `CODEX_HOME`.
+
+## Model and reasoning effort
+
+Because `--ignore-user-config` drops `~/.codex/config.toml`, the model and reasoning effort come only from the command line. Confirmed on codex-cli 0.147.0 on 2026-11-18:
+
+- `--model <MODEL>` (short `-m`) is listed in both `codex exec --help` and `codex exec review --help` ("Model the agent should use"). The tool passes it before `review`, and only when `--model` is given; otherwise Codex uses its built-in default model. It was confirmed from the help text only; no run has used a non-default model yet.
+- Reasoning effort has no flag of its own. It is the config key `model_reasoning_effort`, set with `-c` (`codex exec --help`: "Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`"). The value is passed as a quoted TOML string. `-c` still applies with `--ignore-user-config`: a run with `-c model_reasoning_effort=bogus` reached the model API, which rejected it with a 400.
+- **The accepted levels** come from that rejection, which Codex forwarded in its `error` and `turn.failed` events: "Supported values are: 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', and 'max'." Codex itself passes any string through, so the tool checks the level and exits 2 on anything else. Whether every model accepts every level was not checked.
+- **The event stream does not name the model.** `thread.started` carries only `thread_id`, and no other event in the recorded runs mentions a model or effort. So the tool reports an unset `--model` as "Codex's default" rather than guessing.
+- A real run at the defaults (no `--model`, effort `high`) on the planted-bug repository exited 0 in about 70 seconds and found the planted bug at P2 (`src/stats.js:26-26`), plus the `max()` bound at P3. The event types were the same as in the recorded fixtures, so they were not re-recorded.
 
 ## Structured output is not available in review mode
 
