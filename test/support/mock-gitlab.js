@@ -28,7 +28,7 @@ export async function startMockGitLab({
   fail = () => null,
   redirect = () => null,
 } = {}) {
-  const state = { requests: [], discussions: [], notes: [], awards: [], user, mr, rejectPosition, fail, redirect };
+  const state = { requests: [], discussions: [], notes: [], awards: [], nextAwardId: 1, user, mr, rejectPosition, fail, redirect };
   const nextId = () => randomBytes(20).toString("hex");
 
   const server = createServer((req, res) => {
@@ -95,9 +95,23 @@ export async function startMockGitLab({
         state.notes.push(note);
         return send(201, note);
       }
+      if (req.method === "GET" && rest === "/award_emoji") return send(200, state.awards, { "x-next-page": "" });
       if (req.method === "POST" && rest === "/award_emoji") {
-        state.awards.push(body.name);
-        return send(201, { id: state.awards.length, name: body.name });
+        // GitLab keeps one award per account and name.
+        if (state.awards.some((a) => a.name === body.name && a.user.id === state.user.id)) {
+          return send(404, { message: "Award Emoji Name has already been taken" });
+        }
+        const award = { id: state.nextAwardId++, name: body.name, user: state.user };
+        state.awards.push(award);
+        return send(201, award);
+      }
+      const a = /^\/award_emoji\/(\d+)$/.exec(rest);
+      if (req.method === "DELETE" && a) {
+        const i = state.awards.findIndex((x) => x.id === Number(a[1]));
+        if (i < 0) return send(404, { message: "404 Award Emoji Not Found" });
+        if (state.awards[i].user.id !== state.user.id) return send(403, { message: "403 Forbidden" });
+        state.awards.splice(i, 1);
+        return send(204);
       }
       return send(404, { message: "404 Not Found" });
     });
@@ -109,6 +123,10 @@ export async function startMockGitLab({
     state,
     // Method and path of every request, for "exactly these requests".
     calls: () => state.requests.map((r) => `${r.method} ${r.path.replace(/^\/api\/v4\/projects\/[^/]+\/merge_requests\/\d+/, "MR")}`),
+    // Adds an award as someone else would, by default a person's thumbs up.
+    award(name = "thumbsup", user = { id: 99, username: "a-person" }) {
+      state.awards.push({ id: state.nextAwardId++, name, user });
+    },
     // Marks every thread resolved, as a person clicking "Resolve" would.
     resolveAll() {
       for (const d of state.discussions) for (const n of d.notes) n.resolved = true;

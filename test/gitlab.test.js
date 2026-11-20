@@ -100,7 +100,9 @@ test("every client request refuses a redirect and never sends the token to its t
     replyToDiscussion: () => client.replyToDiscussion("abc", "b"),
     setDiscussionResolved: () => client.setDiscussionResolved("abc", false),
     createNote: () => client.createNote("b"),
+    listAwardEmoji: () => client.listAwardEmoji(),
     awardEmoji: () => client.awardEmoji("thumbsup"),
+    removeAwardEmoji: () => client.removeAwardEmoji(1),
   };
   assert.deepEqual(Object.keys(calls).sort(), Object.keys(client).sort(), "every client method is covered");
   for (const [name, call] of Object.entries(calls)) {

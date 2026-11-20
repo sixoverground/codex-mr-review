@@ -59,7 +59,8 @@ const REVIEW_OPTIONS_HELP = `Review options:
                        stamp on every note, matching [a-z0-9-]+
                        (default: codex)
   --clean-emoji        Add a thumbs up to the merge request when a review
-                       has no findings
+                       has no findings, and remove it when a later
+                       review has findings
   --timeout <seconds>  Give up on the review after this many seconds
                        (default: 900)
   --model <name>       Model Codex reviews with (default: Codex's own

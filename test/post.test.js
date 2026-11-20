@@ -56,6 +56,10 @@ async function setup({ scenario = {}, mock = {}, repo = makeRepo() } = {}) {
   return { repo, fake, gitlab, run };
 }
 
+function awardNames(gitlab) {
+  return gitlab.state.awards.map((a) => a.name);
+}
+
 function bodies(gitlab) {
   return gitlab.state.requests.map((r) => r.raw).join("\n");
 }
@@ -206,13 +210,13 @@ for (const emoji of [true, false]) {
       "GET MR",
       "GET MR/discussions",
       "POST MR/notes",
-      ...(emoji ? ["POST MR/award_emoji"] : []),
+      ...(emoji ? ["GET MR/award_emoji", "POST MR/award_emoji"] : []),
     ]);
     const summary = gitlab.state.notes[0].body;
     assert.match(summary, /Codex found no issues in this change\./);
     assert.match(summary, /\*\*Findings:\*\* none/);
     assert.deepEqual(markers(summary), [{ reviewer: "codex", sha: repo.head }]);
-    assert.deepEqual(gitlab.state.awards, emoji ? ["thumbsup"] : []);
+    assert.deepEqual(awardNames(gitlab), emoji ? ["thumbsup"] : []);
     assert.equal(assertEveryBodyStamped(gitlab), 1);
   });
 }
@@ -223,6 +227,46 @@ test("--clean-emoji adds nothing when there are findings", async (t) => {
   const r = await run(["--clean-emoji"]);
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(gitlab.state.awards, []);
+});
+
+test("--clean-emoji takes back its own thumbs up when a later review has findings, and leaves a person's", async (t) => {
+  const { gitlab, run } = await setup();
+  t.after(() => gitlab.close());
+  gitlab.award("thumbsup", gitlab.state.user);
+  gitlab.award("thumbsup");
+  const r = await run(["--clean-emoji"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(gitlab.state.awards.map((a) => [a.name, a.user.username]), [["thumbsup", "a-person"]]);
+  assert.match(r.stderr, /removed the thumbs up left by an earlier clean review/);
+});
+
+test("--clean-emoji does not add a second thumbs up after a second clean review", async (t) => {
+  const { gitlab, run } = await setup({ scenario: { lastMessage: writeTemp("The change looks correct.\n"), events: COMPLETED } });
+  t.after(() => gitlab.close());
+  gitlab.award("thumbsup", gitlab.state.user);
+  const r = await run(["--clean-emoji"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(awardNames(gitlab), ["thumbsup"]);
+  assert.ok(!gitlab.calls().includes("POST MR/award_emoji"));
+});
+
+test("without --clean-emoji, reactions are never read or changed", async (t) => {
+  const { gitlab, run } = await setup();
+  t.after(() => gitlab.close());
+  gitlab.award("thumbsup", gitlab.state.user);
+  const r = await run();
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(awardNames(gitlab), ["thumbsup"]);
+  assert.ok(!gitlab.calls().some((c) => c.includes("award_emoji")));
+});
+
+test("a failure to read or change reactions does not fail the review", async (t) => {
+  const { gitlab, run } = await setup({ mock: { fail: (method, path) => (path.endsWith("/award_emoji") ? 500 : null) } });
+  t.after(() => gitlab.close());
+  const r = await run(["--clean-emoji"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /could not read the merge request's reactions/);
+  assert.equal(markers(gitlab.state.notes.at(-1).body).length, 1);
 });
 
 for (const [name, scenario] of [
