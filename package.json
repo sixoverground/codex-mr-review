@@ -1,6 +1,6 @@
 {
   "name": "codex-mr-review",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Run the Codex CLI's review mode in GitLab CI and post findings to merge requests",
   "license": "MIT",
   "author": "Six Overground",

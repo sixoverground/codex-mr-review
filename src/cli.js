@@ -12,7 +12,7 @@ import { parseArgs } from "node:util";
 import { DEFAULT_REASONING_EFFORT, MODEL_PATTERN, REASONING_EFFORTS } from "./codex.js";
 import { diffPosition, mergeBase, repoRoot, resolveCommit, GitError } from "./git.js";
 import { GitLabError, createClient } from "./gitlab.js";
-import { failureBody, postReview, scrubModelText, scrubReview } from "./post.js";
+import { failureBody, postReview, scrubModelText, scrubReview, syncCleanEmoji } from "./post.js";
 import { makeRedactor, redactingStream, secretValues } from "./redact.js";
 import { TOKEN_ENV } from "./env.js";
 import { runReview } from "./review.js";
@@ -60,7 +60,7 @@ const REVIEW_OPTIONS_HELP = `Review options:
                        (default: codex)
   --clean-emoji        Add a thumbs up to the merge request when a review
                        has no findings, and remove it when a later
-                       review has findings
+                       review of the head has findings or fails
   --timeout <seconds>  Give up on the review after this many seconds
                        (default: 900)
   --model <name>       Model Codex reviews with (default: Codex's own
@@ -410,6 +410,11 @@ async function runAndPost(options, { stdout, stderr, env, cwd, signal, secrets, 
     } catch (err) {
       if (!(err instanceof GitLabError)) throw err;
       log(`could not post the failure note: ${err.message}`);
+    }
+    // A failed review did not confirm this commit clean, so a thumbs up from
+    // an earlier clean review must not stand beside the failure note.
+    if (options.cleanEmoji) {
+      await syncCleanEmoji(client, { clean: false, reviewed: shaInfo.sha, selfId: self?.id, log });
     }
     return EXIT_FAILURE;
   }

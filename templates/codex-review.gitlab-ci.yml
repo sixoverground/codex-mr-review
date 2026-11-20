@@ -4,7 +4,7 @@
 # Use it from a project's .gitlab-ci.yml:
 #
 #   include:
-#     - remote: https://raw.githubusercontent.com/sixoverground/codex-mr-review/v0.2.1/templates/codex-review.gitlab-ci.yml
+#     - remote: https://raw.githubusercontent.com/sixoverground/codex-mr-review/v0.2.2/templates/codex-review.gitlab-ci.yml
 #
 #   codex-review:
 #     tags: [your-runner-tag]

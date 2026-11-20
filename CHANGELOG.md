@@ -2,6 +2,13 @@
 
 All notable changes to this project are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.2.2]
+
+### Fixed
+
+- `--clean-emoji` takes its thumbs up back when a later review **fails** or times out, not only when it posts findings. The failure note used to stand beside a thumbs up from an earlier clean review.
+- `--clean-emoji` changes reactions only when the reviewed commit is still the merge request's head when the review finishes, read again at that point. A retried pipeline for an older commit, or a review overtaken by a push, used to be able to add the thumbs up back after the current head had findings, or take away the current head's.
+
 ## [0.2.1]
 
 ### Fixed
@@ -47,6 +54,7 @@ The first release: review a GitLab merge request with Codex's own review mode an
 - Codex's whole process group is killed when it exits. GitLab redirects are never followed, so the token is never resent to another host.
 - `SECURITY.md` states what remains open: the read-only sandbox can read anything the runner's user can, so run the runner as a dedicated user.
 
+[0.2.2]: https://github.com/sixoverground/codex-mr-review/releases/tag/v0.2.2
 [0.2.1]: https://github.com/sixoverground/codex-mr-review/releases/tag/v0.2.1
 [0.2.0]: https://github.com/sixoverground/codex-mr-review/releases/tag/v0.2.0
 [0.1.0]: https://github.com/sixoverground/codex-mr-review/releases/tag/v0.1.0
