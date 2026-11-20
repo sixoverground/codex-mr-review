@@ -235,14 +235,46 @@ export async function postReview(client, review, {
   await client.createNote(summaryBody(clean, { sha, reviewer, notReposted: result.notReposted, reopened: result.reopened, markerWithheld }));
   log(markerWithheld ? "posted the summary note without a marker" : `posted the summary note with the marker for ${sha}`);
 
-  if (cleanEmoji && clean.findings.length === 0 && !markerWithheld) {
+  if (cleanEmoji) {
+    await syncCleanEmoji(client, { clean: clean.findings.length === 0 && !markerWithheld, selfId, log });
+  }
+  return result;
+}
+
+// The thumbs up says the latest review was clean, so it follows every
+// review: added after a clean one, and taken back after one with findings
+// or a withheld marker. GitLab keeps one award per account and name, so a
+// thumbs up left by an earlier clean review would otherwise outlive the
+// findings posted after it. Only the token's own thumbs up is ever touched.
+// Decoration only: the marker is the proof, and it is already posted, so
+// every failure here is logged and nothing more.
+async function syncCleanEmoji(client, { clean, selfId, log }) {
+  let own;
+  try {
+    own = (await client.listAwardEmoji()).filter((a) => a.name === "thumbsup" && a.user?.id === selfId);
+  } catch (err) {
+    log(`could not read the merge request's reactions: ${err.message}`);
+    return;
+  }
+  if (clean) {
+    if (own.length > 0) {
+      log("the thumbs up from an earlier clean review is still there");
+      return;
+    }
     try {
       await client.awardEmoji("thumbsup");
       log("added a thumbs up");
     } catch (err) {
-      // Decoration only: the marker is the proof, and it is already posted.
       log(`could not add a thumbs up: ${err.message}`);
     }
+    return;
   }
-  return result;
+  for (const award of own) {
+    try {
+      await client.removeAwardEmoji(award.id);
+      log("removed the thumbs up left by an earlier clean review");
+    } catch (err) {
+      log(`could not remove the thumbs up left by an earlier clean review: ${err.message}`);
+    }
+  }
 }

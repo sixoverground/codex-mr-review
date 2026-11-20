@@ -39,11 +39,11 @@ on a line of its own. The stamp says who wrote a note and nothing more: it is ne
 On the machine that runs the review (the runner), with Node 20 or later and git:
 
 ```
-npm install -g github:sixoverground/codex-mr-review#v0.2.0
+npm install -g github:sixoverground/codex-mr-review#v0.2.1
 codex-mr-review --version
 ```
 
-This installs straight from the release tag on GitHub, so no npm registry account is needed. The equivalent long form is `npm install -g git+https://github.com/sixoverground/codex-mr-review.git#v0.2.0`. There are no runtime dependencies and no build step.
+This installs straight from the release tag on GitHub, so no npm registry account is needed. The equivalent long form is `npm install -g git+https://github.com/sixoverground/codex-mr-review.git#v0.2.1`. There are no runtime dependencies and no build step.
 
 The runner also needs the Codex CLI (tested with codex-cli 0.147.x), logged in. See "Codex on the runner" below.
 
@@ -53,7 +53,7 @@ In the project's `.gitlab-ci.yml`:
 
 ```yaml
 include:
-  - remote: https://raw.githubusercontent.com/sixoverground/codex-mr-review/v0.2.0/templates/codex-review.gitlab-ci.yml
+  - remote: https://raw.githubusercontent.com/sixoverground/codex-mr-review/v0.2.1/templates/codex-review.gitlab-ci.yml
 
 codex-review:
   tags: [your-runner-tag]
@@ -176,7 +176,7 @@ What it posts, in this order (layouts in [docs/output-format.md](docs/output-for
 1. Each new finding as an inline, resolvable thread on the line, built from the merge request's `diff_refs`. If GitLab rejects the position (for example a line outside the diff), the finding is posted as a general thread that cites `path:line`, so it is never dropped.
 2. A finding already posted by an earlier review (matched by a fingerprint hidden in a thread the token's account started) is not posted again. If its thread was resolved and the finding is still there, the thread gets one reply and is reopened, once. After that it is only counted. A note carrying the consumer stamp `<!-- phases:driver v=1 -->` never counts as the tool's, so a fingerprint quoted in one cannot hide a finding and a reopened line quoted in one cannot stop a reopen. Threads posted by 0.1.0, which have a fingerprint and no stamp, are still recognised.
 3. A summary note: the summary, counts by priority, how many findings were not posted again or were reopened, whether `AGENTS.md` changed, then the reviewer stamp and the review marker `<!-- phases:review v=1 reviewer=<name> sha=<sha> -->` on its last line. `--reviewer` sets the name in both.
-4. With `--clean-emoji`, a thumbs up on the merge request when the review found nothing.
+4. With `--clean-emoji`, a thumbs up on the merge request when the review found nothing. The thumbs up follows the latest review: one with findings, or with the marker withheld, removes the thumbs up the token's account left after an earlier clean review, and a second clean review does not try to add another. Only the token's own thumbs up is touched, never anyone else's. On your own account the tool cannot tell its thumbs up from yours, since a reaction carries no stamp, so a review with findings removes yours too.
 
 The marker's sha is the pipeline's: `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` when set (the branch head in a merged-results pipeline), else `CI_COMMIT_SHA`, else the commit checked out where the tool runs. It is never read from model output. The marker is posted only after Codex exited successfully and every finding was posted. A failed review posts a short failure note, with the stamp and no marker, and exits 1.
 
@@ -198,7 +198,7 @@ The marker contract is not specific to Codex. Any reviewer can share this job's 
 
 ```yaml
 include:
-  - remote: https://raw.githubusercontent.com/sixoverground/codex-mr-review/v0.2.0/templates/codex-review.gitlab-ci.yml
+  - remote: https://raw.githubusercontent.com/sixoverground/codex-mr-review/v0.2.1/templates/codex-review.gitlab-ci.yml
 
 other-review:
   extends: .codex-review

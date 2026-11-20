@@ -8,7 +8,9 @@
 //   POST /projects/:id/merge_requests/:iid/discussions/:did/notes
 //   PUT  /projects/:id/merge_requests/:iid/discussions/:did  (resolved)
 //   POST /projects/:id/merge_requests/:iid/notes             https://docs.gitlab.com/api/notes/
-//   POST /projects/:id/merge_requests/:iid/award_emoji       https://docs.gitlab.com/api/emoji_reactions/
+//   GET  /projects/:id/merge_requests/:iid/award_emoji       https://docs.gitlab.com/api/emoji_reactions/
+//   POST /projects/:id/merge_requests/:iid/award_emoji       (same page)
+//   DELETE /projects/:id/merge_requests/:iid/award_emoji/:aid (same page)
 //
 // The token goes only in the PRIVATE-TOKEN header. It is never put in a
 // URL, a body or an error message, and every body this client sends passes
@@ -125,8 +127,14 @@ export function createClient({ baseUrl, token, project, mr, redact = (s) => s, f
     async createNote(body) {
       return (await request("POST", `${mrPath}/notes`, { body: { body } })).data;
     },
+    async listAwardEmoji() {
+      return paginate(`${mrPath}/award_emoji`);
+    },
     async awardEmoji(name) {
       return (await request("POST", `${mrPath}/award_emoji`, { body: { name } })).data;
+    },
+    async removeAwardEmoji(awardId) {
+      return (await request("DELETE", `${mrPath}/award_emoji/${encodeURIComponent(awardId)}`)).data;
     },
   };
 }

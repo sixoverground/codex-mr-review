@@ -2,6 +2,12 @@
 
 All notable changes to this project are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.2.1]
+
+### Fixed
+
+- `--clean-emoji` takes its thumbs up back. GitLab keeps one award per account, so a thumbs up left after a clean review used to stay on the merge request after a later review posted findings, and the merge request looked clean when it was not. The thumbs up now follows the latest review: a review with findings, or with the marker withheld, removes the thumbs up the token's account left, and a clean review adds one only when there is none. Only the token's own thumbs up is touched. Reading or changing reactions is still decoration: a failure is logged and never fails the review.
+
 ## [0.2.0]
 
 The tool meets version 1.1 of the review contract, so it can post from the same account as the person or tool reading the merge request. Nothing you configured has to change.
@@ -41,5 +47,6 @@ The first release: review a GitLab merge request with Codex's own review mode an
 - Codex's whole process group is killed when it exits. GitLab redirects are never followed, so the token is never resent to another host.
 - `SECURITY.md` states what remains open: the read-only sandbox can read anything the runner's user can, so run the runner as a dedicated user.
 
+[0.2.1]: https://github.com/sixoverground/codex-mr-review/releases/tag/v0.2.1
 [0.2.0]: https://github.com/sixoverground/codex-mr-review/releases/tag/v0.2.0
 [0.1.0]: https://github.com/sixoverground/codex-mr-review/releases/tag/v0.1.0
