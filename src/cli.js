@@ -411,10 +411,22 @@ async function runAndPost(options, { stdout, stderr, env, cwd, signal, secrets, 
       if (!(err instanceof GitLabError)) throw err;
       log(`could not post the failure note: ${err.message}`);
     }
-    // A failed review did not confirm this commit clean, so a thumbs up from
-    // an earlier clean review must not stand beside the failure note.
+    // A failed review did not confirm its commit clean, so a thumbs up from
+    // an earlier clean review must not stand beside the failure note. The
+    // commit is the one the review was asked for (--head, or the CI
+    // default), not the marker's sha: with an explicit --head they differ,
+    // and comparing the marker's sha would let a failed review of an older
+    // commit take away the current head's thumbs up. If that commit cannot
+    // be named, reactions are left alone.
     if (options.cleanEmoji) {
-      await syncCleanEmoji(client, { clean: false, reviewed: shaInfo.sha, selfId: self?.id, log });
+      let reviewed = null;
+      try {
+        reviewed = resolveCommit(repoRoot(cwd), options.head);
+      } catch (err) {
+        if (!(err instanceof GitError)) throw err;
+        log(`could not tell which commit the failed review was of (${err.message}); reactions are left as they are`);
+      }
+      if (reviewed) await syncCleanEmoji(client, { clean: false, reviewed, selfId: self?.id, log });
     }
     return EXIT_FAILURE;
   }

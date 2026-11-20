@@ -272,6 +272,17 @@ test("--clean-emoji takes back its own thumbs up when a later review fails", asy
   assert.deepEqual(markers(gitlab.state.notes[0].body), []);
 });
 
+test("a failed review of an older --head leaves the current head's thumbs up", async (t) => {
+  const repo = makeRepo();
+  const { gitlab, run } = await setup({ repo, scenario: { events: join(CODEX_FIXTURES, "failed-model-not-found.events.jsonl"), exitCode: 1 } });
+  t.after(() => gitlab.close());
+  gitlab.award("thumbsup", gitlab.state.user);
+  const r = await run(["--clean-emoji", "--head", repo.base]);
+  assert.equal(r.status, 1);
+  assert.deepEqual(awardNames(gitlab), ["thumbsup"]);
+  assert.match(r.stderr, /the merge request has moved on/);
+});
+
 test("a failed review without --clean-emoji leaves reactions alone", async (t) => {
   const { gitlab, run } = await setup({ scenario: { events: join(CODEX_FIXTURES, "failed-model-not-found.events.jsonl"), exitCode: 1 } });
   t.after(() => gitlab.close());
