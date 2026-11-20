@@ -210,7 +210,7 @@ for (const emoji of [true, false]) {
       "GET MR",
       "GET MR/discussions",
       "POST MR/notes",
-      ...(emoji ? ["GET MR/award_emoji", "POST MR/award_emoji"] : []),
+      ...(emoji ? ["GET MR", "GET MR/award_emoji", "POST MR/award_emoji"] : []),
     ]);
     const summary = gitlab.state.notes[0].body;
     assert.match(summary, /Codex found no issues in this change\./);
@@ -259,6 +259,60 @@ test("without --clean-emoji, reactions are never read or changed", async (t) => 
   assert.deepEqual(awardNames(gitlab), ["thumbsup"]);
   assert.ok(!gitlab.calls().some((c) => c.includes("award_emoji")));
 });
+
+test("--clean-emoji takes back its own thumbs up when a later review fails", async (t) => {
+  const { gitlab, run } = await setup({ scenario: { events: join(CODEX_FIXTURES, "failed-model-not-found.events.jsonl"), exitCode: 1 } });
+  t.after(() => gitlab.close());
+  gitlab.award("thumbsup", gitlab.state.user);
+  gitlab.award("thumbsup");
+  const r = await run(["--clean-emoji"]);
+  assert.equal(r.status, 1);
+  assert.deepEqual(gitlab.state.awards.map((a) => [a.name, a.user.username]), [["thumbsup", "a-person"]]);
+  assert.equal(gitlab.state.notes.length, 1, "only the failure note");
+  assert.deepEqual(markers(gitlab.state.notes[0].body), []);
+});
+
+test("a failed review of an older --head leaves the current head's thumbs up", async (t) => {
+  const repo = makeRepo();
+  const { gitlab, run } = await setup({ repo, scenario: { events: join(CODEX_FIXTURES, "failed-model-not-found.events.jsonl"), exitCode: 1 } });
+  t.after(() => gitlab.close());
+  gitlab.award("thumbsup", gitlab.state.user);
+  const r = await run(["--clean-emoji", "--head", repo.base]);
+  assert.equal(r.status, 1);
+  assert.deepEqual(awardNames(gitlab), ["thumbsup"]);
+  assert.match(r.stderr, /the merge request has moved on/);
+});
+
+test("a failed review without --clean-emoji leaves reactions alone", async (t) => {
+  const { gitlab, run } = await setup({ scenario: { events: join(CODEX_FIXTURES, "failed-model-not-found.events.jsonl"), exitCode: 1 } });
+  t.after(() => gitlab.close());
+  gitlab.award("thumbsup", gitlab.state.user);
+  const r = await run();
+  assert.equal(r.status, 1);
+  assert.deepEqual(awardNames(gitlab), ["thumbsup"]);
+  assert.ok(!gitlab.calls().some((c) => c.includes("award_emoji")));
+});
+
+for (const [name, scenario, preset, expected] of [
+  ["a clean review does not add it", { lastMessage: writeTemp("The change looks correct.\n"), events: COMPLETED }, false, []],
+  ["a review with findings does not take it back", {}, true, ["thumbsup"]],
+  ["a failed review does not take it back", { events: join(CODEX_FIXTURES, "failed-model-not-found.events.jsonl"), exitCode: 1 }, true, ["thumbsup"]],
+]) {
+  test(`--clean-emoji when the merge request has moved past the reviewed commit: ${name}`, async (t) => {
+    const repo = makeRepo();
+    const moved = "f".repeat(40);
+    const { gitlab, run } = await setup({
+      repo,
+      scenario,
+      mock: { mr: { iid: 3, sha: moved, diff_refs: { base_sha: repo.base, start_sha: repo.base, head_sha: moved } } },
+    });
+    t.after(() => gitlab.close());
+    if (preset) gitlab.award("thumbsup", gitlab.state.user);
+    await run(["--clean-emoji"]);
+    assert.deepEqual(awardNames(gitlab), expected);
+    assert.ok(!gitlab.calls().some((c) => c.includes("award_emoji")), "reactions are not even read");
+  });
+}
 
 test("a failure to read or change reactions does not fail the review", async (t) => {
   const { gitlab, run } = await setup({ mock: { fail: (method, path) => (path.endsWith("/award_emoji") ? 500 : null) } });

@@ -236,21 +236,35 @@ export async function postReview(client, review, {
   log(markerWithheld ? "posted the summary note without a marker" : `posted the summary note with the marker for ${sha}`);
 
   if (cleanEmoji) {
-    await syncCleanEmoji(client, { clean: clean.findings.length === 0 && !markerWithheld, selfId, log });
+    await syncCleanEmoji(client, { clean: clean.findings.length === 0 && !markerWithheld, reviewed: review.head, selfId, log });
   }
   return result;
 }
 
-// The thumbs up says the latest review was clean, so it follows every
-// review: added after a clean one, and taken back after one with findings
-// or a withheld marker. GitLab keeps one award per account and name, so a
-// thumbs up left by an earlier clean review would otherwise outlive the
-// findings posted after it. Only the token's own thumbs up is ever touched.
-// Decoration only: the marker is the proof, and it is already posted, so
-// every failure here is logged and nothing more.
-async function syncCleanEmoji(client, { clean, selfId, log }) {
+// The thumbs up says the latest review of the merge request's current head
+// was clean, so it follows every review of that head: added after a clean
+// one, and taken back after one with findings, a withheld marker, or a
+// failure. GitLab keeps one award per account and name, so a thumbs up left
+// by an earlier clean review would otherwise outlive what came after it.
+//
+// The award is merge-request wide but a review is of one commit, so nothing
+// changes unless the reviewed commit is still the head when the review ends:
+// a retried pipeline for an older commit, or a review overtaken by a push,
+// must not add the thumbs up back or take away the current head's. The head
+// is read again here, since a review takes minutes and the one read at the
+// start may be stale.
+//
+// Only the token's own thumbs up is ever touched. Decoration only: the
+// marker is the proof, so every failure here is logged and nothing more.
+export async function syncCleanEmoji(client, { clean, reviewed, selfId, log }) {
   let own;
   try {
+    const mr = await client.getMergeRequest();
+    const head = mr?.sha ?? mr?.diff_refs?.head_sha;
+    if (head !== reviewed) {
+      log(`the merge request has moved on to ${head ? head.slice(0, 10) : "an unknown head"}; reactions are left as they are`);
+      return;
+    }
     own = (await client.listAwardEmoji()).filter((a) => a.name === "thumbsup" && a.user?.id === selfId);
   } catch (err) {
     log(`could not read the merge request's reactions: ${err.message}`);
